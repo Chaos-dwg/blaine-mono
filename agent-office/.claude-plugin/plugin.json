@@ -1,0 +1,6 @@
+{
+  "name": "agent-office",
+  "version": "0.1.0",
+  "description": "A pixel-art office beside the chat where each agent has a desk and you can watch them hand work to each other.",
+  "types": "./types/index.d.ts"
+}

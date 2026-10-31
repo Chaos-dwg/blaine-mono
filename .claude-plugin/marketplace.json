@@ -1,0 +1,16 @@
+{
+  "name": "blaine-protocol",
+  "owner": { "name": "Chaos-dwg" },
+  "plugins": [
+    {
+      "name": "blaine-mono",
+      "source": "./blaine-mono",
+      "description": "An 8-bit pink monorail crossing the waste lands above the prompt while Claude works. /blaine shows or hides it."
+    },
+    {
+      "name": "agent-office",
+      "source": "./agent-office",
+      "description": "A pixel-art office beside the chat where each agent has a desk and you can watch them hand work to each other. /office opens it."
+    }
+  ]
+}
