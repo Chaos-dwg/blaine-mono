@@ -36,11 +36,74 @@ function hookEngine(on: Parameters<Parameters<typeof test>[1]>[1], settings = {}
   return blits
 }
 
+// The letters a frame carries in their own cells, in reading order.
+const letters = (cells: string) =>
+  String.fromCharCode(...new Uint32Array(Uint8Array.fromBase64(cells).buffer).filter((c, i) => i % 3 === 0 && c < 0x80))
+
+// The column where the token count over the train starts.
+function labelColumn(cells: string, columns: number) {
+  const codes = new Uint32Array(Uint8Array.fromBase64(cells).buffer).filter((_, i) => i % 3 === 0)
+
+  return codes.findIndex((c, i) => i >= columns && c < 0x80) % columns
+}
+
+function sessionEngine(on: Parameters<Parameters<typeof test>[1]>[1]) {
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'blaine' } }))
+  on('store.get', () => ({ value: undefined }))
+  on('ui.invalidate', () => ({ value: undefined }))
+}
+
+test('context reads as a trip from Lud to Topeka, in letters', () => {
+  const near = frame(80, 9, 0, false, { tokens: 16000, topeka: 160000 })
+  const far = frame(80, 9, 0, false, { tokens: 150000, topeka: 160000 })
+
+  expect(letters(frame(80, 9, 0, false, { tokens: 84000, topeka: 160000 }))).toBe('LUDTOPEKA 160k84k')
+  expect(letters(frame(80, 9, 0, false))).toBe('LUDTOPEKA')
+  expect(labelColumn(near, 80)).toBeLessThan(labelColumn(far, 80))
+})
+
+test('the windows go pink only near Topeka', () => {
+  const pink = (cells: string) =>
+    new Uint32Array(Uint8Array.fromBase64(cells).buffer).filter((c, i) => i % 3 !== 0 && c === 0xff5fa0).length
+
+  expect(pink(frame(80, 9, 4, true, { tokens: 80000, topeka: 160000 }))).toBe(0)
+  expect(pink(frame(80, 9, 4, true, { tokens: 140000, topeka: 160000 }))).toBeGreaterThan(0)
+})
+
+test('the band reads the context window and the compaction point', async ($, on) => {
+  hookEngine(on)
+  sessionEngine(on)
+  on('session.usage', () => ({
+    value: { context: { tokens: 84000, window: 200000, percent: 42, breakdown: { autoCompactThreshold: 160000 } } },
+  }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  expect(letters((await ui.find({ type: 'Raster' }))?.props.cells as string)).toBe('LUDTOPEKA 160k84k')
+  await ui.unmount()
+})
+
+test('the band still draws when usage cannot be read', async ($, on) => {
+  hookEngine(on)
+  sessionEngine(on)
+  on('session.usage', () => {
+    throw new Error('no reading')
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  expect(letters((await ui.find({ type: 'Raster' }))?.props.cells as string)).toBe('LUDTOPEKA')
+  await ui.unmount()
+})
+
 test('a frame packs one glyph and two colours per cell', () => {
   const bytes = Uint8Array.fromBase64(frame(40, 6, 3, true))
 
   expect(bytes.length).toBe(40 * 6 * 12)
-  expect(new Uint32Array(bytes.buffer)[0]).toBe(0x2580)
+  expect(new Uint32Array(bytes.buffer)[40 * 3]).toBe(0x2580) // Row 0 carries the signs.
 })
 
 test('the scene moves from tick to tick and rests when parked', () => {

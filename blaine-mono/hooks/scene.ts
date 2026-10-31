@@ -7,6 +7,15 @@ const BODY_ROWS = 6
 
 export const MIN_ROWS = BODY_ROWS // The rail needs six pixels below it, the train six above.
 export const FAST = 3 // Foreground pixels per tick; slower layers are fractions of it.
+const ALERT_AT = 0.8 // Of the way to Topeka: Blaine's windows go pink here.
+
+// Context as a trip: tokens in the window now, and Topeka, where compaction runs.
+export type Reading = { tokens: number; topeka: number }
+
+export const tripOf = (reading?: Reading) => (reading === undefined ? 0 : Math.min(1, reading.tokens / reading.topeka))
+export const isAlert = (trip: number) => trip >= ALERT_AT
+export const short = (tokens: number) =>
+  tokens >= 1e6 ? `${(tokens / 1e6).toFixed(1).replace('.0', '')}M` : `${Math.round(tokens / 1000)}k`
 
 const SKY = [0x120a14, 0x1e0e1a, 0x34141e, 0x561c20, 0x82291f, 0xb04224, 0xd8662c, 0xf0943c]
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
@@ -25,6 +34,7 @@ const RAIL = 0x8a8890
 const RAIL_UNDER = 0x3e3c44
 const RAIL_TICK = 0x56545c
 const SPARK = 0xffe08a
+const SIGN = 0xe8dcc8
 
 // Blaine, top row to bottom: a long bullet nose, a blunt tail, lit from above.
 const BODY = [0xffc2da, 0xf986b4, 0xf986b4, 0xe9689f, 0xc44a82, 0x7c2a5a]
@@ -62,10 +72,16 @@ for (let x = 0; x < TILE; x += 1) {
   dunes[x] = Math.round(1.5 + Math.sin(a * 7) + 0.6 * Math.sin(a * 23)) + (noise(x, 6) < 0.015 ? 2 : 0)
 }
 
-function train(px: Uint32Array, w: number, railY: number, t: number, isMoving: boolean): void {
+// Blaine leaves Lud at the left edge and pulls into Topeka at the right.
+function span(w: number, trip: number) {
   const length = Math.min(Math.floor(w * 0.36), 48)
-  const nose = Math.floor(w * 0.5 + length * 0.6)
-  const tail = nose - length
+  const tail = Math.round(trip * (w - 1 - length))
+
+  return { length, tail, nose: tail + length }
+}
+
+function train(px: Uint32Array, w: number, railY: number, t: number, isMoving: boolean, trip: number): void {
+  const { tail, nose } = span(w, trip)
 
   for (let r = 0; r < BODY_ROWS; r += 1) {
     const y = railY - BODY_ROWS + r
@@ -76,8 +92,7 @@ function train(px: Uint32Array, w: number, railY: number, t: number, isMoving: b
 
   const windowY = railY - BODY_ROWS + WINDOW_ROW
   for (let x = tail + 5, n = 0; x < nose - 17; x += 7, n += 1) {
-    const isPink = isMoving && noise(n, t >> 3) < 0.08
-    const color = isPink ? WINDOW_PINK : noise(n, 7) < 0.3 ? WINDOW_DIM : WINDOW
+    const color = isAlert(trip) ? WINDOW_PINK : noise(n, 7) < 0.3 ? WINDOW_DIM : WINDOW
     px.fill(color, windowY * w + x, windowY * w + x + 5)
   }
 
@@ -88,7 +103,7 @@ function train(px: Uint32Array, w: number, railY: number, t: number, isMoving: b
 
   if (!isMoving) return
 
-  for (let x = nose + 1; x < Math.min(w, nose + 7); x += 2) {
+  for (let x = nose + 1; x < Math.min(w - 1, nose + 7); x += 2) {
     px[(railY - 2) * w + x + (t & 1)] = SPARK
   }
   for (let r = 1; r < BODY_ROWS; r += 1) {
@@ -100,7 +115,7 @@ function train(px: Uint32Array, w: number, railY: number, t: number, isMoving: b
 }
 
 // One frame as 0xRRGGBB pixels, row-major. `t` counts ticks; the scene never reads a clock.
-export function paint(w: number, h: number, t: number, isMoving: boolean): Uint32Array {
+export function paint(w: number, h: number, t: number, isMoving: boolean, trip = 0): Uint32Array {
   const px = new Uint32Array(w * h)
   const horizon = h - 4
   const railY = h - 6
@@ -140,7 +155,7 @@ export function paint(w: number, h: number, t: number, isMoving: boolean): Uint3
     }
   }
 
-  train(px, w, railY, t, isMoving)
+  train(px, w, railY, t, isMoving, trip)
 
   if (isMoving) {
     for (let x = 0; x < w; x += 1) {
@@ -151,14 +166,34 @@ export function paint(w: number, h: number, t: number, isMoving: boolean): Uint3
 }
 
 // `cells` as RasterProps packs them: base64 of [codePoint, foreground, background] per cell.
-export function frame(columns: number, rows: number, t: number, isMoving: boolean): string {
-  const px = paint(columns, rows * 2, t, isMoving)
+// Letters sit in their own cells: LUD and TOPEKA on the top row, the token count over the train.
+export function frame(columns: number, rows: number, t: number, isMoving: boolean, reading?: Reading): string {
+  const trip = tripOf(reading)
+  const px = paint(columns, rows * 2, t, isMoving, trip)
   const cells = new Uint32Array(columns * rows * 3)
   for (let i = 0; i < columns * rows; i += 1) {
     const top = Math.floor(i / columns) * 2 * columns + (i % columns)
     cells[i * 3] = UPPER_HALF
     cells[i * 3 + 1] = px[top]
     cells[i * 3 + 2] = px[top + columns]
+  }
+
+  const color = isAlert(trip) ? WINDOW_PINK : SIGN
+  const write = (text: string, row: number, start: number) => {
+    for (let k = 0; k < text.length; k += 1) {
+      cells[(row * columns + start + k) * 3] = text.charCodeAt(k)
+      cells[(row * columns + start + k) * 3 + 1] = color
+    }
+  }
+  const topeka = reading === undefined ? 'TOPEKA' : `TOPEKA ${short(reading.topeka)}`
+  write('LUD', 0, 0)
+  write(topeka, 0, columns - topeka.length)
+
+  const labelRow = rows - BODY_ROWS - 1 // The cell row just above the train's roof.
+  if (reading !== undefined && labelRow >= 1) {
+    const { length, tail } = span(columns, trip)
+    const label = short(reading.tokens)
+    write(label, labelRow, Math.max(0, Math.min(columns - label.length, tail + ((length - label.length) >> 1))))
   }
   return new Uint8Array(cells.buffer).toBase64()
 }
