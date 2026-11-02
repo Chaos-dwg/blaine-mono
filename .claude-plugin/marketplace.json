@@ -1,0 +1,13 @@
+{
+  "name": "blaine-protocol",
+  "owner": {
+    "name": "Chaos-dwg"
+  },
+  "plugins": [
+    {
+      "name": "blaine-mono",
+      "source": "./blaine-mono",
+      "description": "An 8-bit pink monorail crossing the waste lands above the prompt. Where it sits between Lud and Topeka shows how full the context is. /blaine shows or hides it."
+    }
+  ]
+}
