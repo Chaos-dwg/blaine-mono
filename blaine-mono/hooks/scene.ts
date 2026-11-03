@@ -8,9 +8,16 @@ const BODY_ROWS = 6
 export const MIN_ROWS = BODY_ROWS // The rail needs six pixels below it, the train six above.
 export const FAST = 3 // Foreground pixels per tick; slower layers are fractions of it.
 const ALERT_AT = 0.8 // Of the way to Topeka: Blaine's windows go pink here.
+export const BLAST_TICKS = 45 // Three seconds at fifteen frames a second.
+export const STILL_AGE = 14 // The one frame of a blast that reduced motion holds.
+const TRAIN_LASTS = 6 // Ticks into a blast before the train is gone.
+const BURSTS = 7
 
-// Context as a trip: tokens in the window now, and Topeka, where compaction runs.
+// Context as a trip: tokens in the window now, and Topeka, the end of the window.
 export type Reading = { tokens: number; topeka: number }
+
+// Blaine blowing up: ticks since it began, and how far along the line he got.
+export type Blast = { age: number; trip: number }
 
 export const tripOf = (reading?: Reading) => (reading === undefined ? 0 : Math.min(1, reading.tokens / reading.topeka))
 export const isAlert = (trip: number) => trip >= ALERT_AT
@@ -46,6 +53,7 @@ const WINDOW_DIM = 0x3f6fa8
 const WINDOW_PINK = 0xff5fa0
 const EYE = 0x1a2450
 const EYE_GLINT = 0xdff3ff
+export const FIRE = [0xfff6d0, 0xffd24a, 0xf6842c, 0xc43a1e, 0x4a2a30] // Hot to cold, then smoke.
 
 function noise(a: number, b = 0): number {
   let x = Math.imul(a ^ Math.imul(b, 0x2f0b4c87) ^ 0x9e3779b9, 0x85ebca6b)
@@ -114,8 +122,38 @@ function train(px: Uint32Array, w: number, railY: number, t: number, isMoving: b
   }
 }
 
+// He goes up nose first, the fire runs back along him, and pink pieces fly and fall.
+function explosion(px: Uint32Array, w: number, h: number, railY: number, trip: number, age: number): void {
+  const { length, nose } = span(w, trip)
+
+  for (let n = 0; n < BURSTS; n += 1) {
+    const life = age - n * 2
+    if (life <= 0) continue
+
+    const cx = nose - Math.round((n / (BURSTS - 1)) * length)
+    const cy = railY - 3 - Math.floor(noise(n, 8) * 5)
+    const radius = (6 + noise(n, 9) * 5) * Math.min(1, life / 7)
+    const fade = (life - 14) / 18
+
+    for (let y = Math.max(0, Math.floor(cy - radius)); y <= Math.min(h - 1, Math.ceil(cy + radius)); y += 1) {
+      for (let x = Math.max(0, Math.floor(cx - radius)); x <= Math.min(w - 1, Math.ceil(cx + radius)); x += 1) {
+        const reach = Math.hypot(x - cx, y - cy) / radius
+        if (reach > 1 || BAYER[(y & 3) * 4 + (x & 3)] / 16 < fade) continue
+
+        px[y * w + x] = FIRE[Math.min(FIRE.length - 1, Math.floor(reach * 3 + life / 8))]
+      }
+    }
+  }
+
+  for (let i = 0; i < 36; i += 1) {
+    const x = Math.round(nose - noise(i, 10) * length + (noise(i, 11) - 0.5) * age * 1.6)
+    const y = Math.round(railY - 3 - (0.2 + noise(i, 12) * 1.1) * age + 0.04 * age * age)
+    if (x >= 0 && x < w && y >= 0 && y < railY) px[y * w + x] = BODY[i % BODY.length]
+  }
+}
+
 // One frame as 0xRRGGBB pixels, row-major. `t` counts ticks; the scene never reads a clock.
-export function paint(w: number, h: number, t: number, isMoving: boolean, trip = 0): Uint32Array {
+export function paint(w: number, h: number, t: number, isMoving: boolean, trip = 0, blastAge?: number): Uint32Array {
   const px = new Uint32Array(w * h)
   const horizon = h - 4
   const railY = h - 6
@@ -155,7 +193,8 @@ export function paint(w: number, h: number, t: number, isMoving: boolean, trip =
     }
   }
 
-  train(px, w, railY, t, isMoving, trip)
+  if (blastAge === undefined || blastAge < TRAIN_LASTS) train(px, w, railY, t, isMoving, trip)
+  if (blastAge !== undefined) explosion(px, w, h, railY, trip, blastAge)
 
   if (isMoving) {
     for (let x = 0; x < w; x += 1) {
@@ -167,9 +206,16 @@ export function paint(w: number, h: number, t: number, isMoving: boolean, trip =
 
 // `cells` as RasterProps packs them: base64 of [codePoint, foreground, background] per cell.
 // Letters sit in their own cells: LUD and TOPEKA on the top row, the token count over the train.
-export function frame(columns: number, rows: number, t: number, isMoving: boolean, reading?: Reading): string {
-  const trip = tripOf(reading)
-  const px = paint(columns, rows * 2, t, isMoving, trip)
+export function frame(
+  columns: number,
+  rows: number,
+  t: number,
+  isMoving: boolean,
+  reading?: Reading,
+  blast?: Blast,
+): string {
+  const trip = blast?.trip ?? tripOf(reading)
+  const px = paint(columns, rows * 2, t, isMoving, trip, blast?.age)
   const cells = new Uint32Array(columns * rows * 3)
   for (let i = 0; i < columns * rows; i += 1) {
     const top = Math.floor(i / columns) * 2 * columns + (i % columns)
@@ -190,7 +236,7 @@ export function frame(columns: number, rows: number, t: number, isMoving: boolea
   write(topeka, 0, columns - topeka.length)
 
   const labelRow = rows - BODY_ROWS - 1 // The cell row just above the train's roof.
-  if (reading !== undefined && labelRow >= 1) {
+  if (reading !== undefined && blast === undefined && labelRow >= 1) {
     const { length, tail } = span(columns, trip)
     const label = short(reading.tokens)
     write(label, labelRow, Math.max(0, Math.min(columns - label.length, tail + ((length - label.length) >> 1))))
