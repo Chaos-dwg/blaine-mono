@@ -15,18 +15,18 @@ Each band needs a terminal at least 40 columns wide. Both can run at once; `/bla
 At the prompt of a terminal session:
 
 ```
-/plugin install blaine-mono --marketplace Chaos-dwg/blaine-protocol
+/plugin install blaine-mono --marketplace Chaos-dwg/blaine-mono
 ```
 
 From a shell:
 
 ```
-claude plugin install blaine-mono --marketplace Chaos-dwg/blaine-protocol
+claude plugin install blaine-mono --marketplace Chaos-dwg/blaine-mono
 ```
 
 Use `gunslinger` in place of `blaine-mono` for Roland.
 
-Answer `y` to add the marketplace, then pick a scope. This repository is private, so you need read access on GitHub and a git credential for github.com on your machine (an SSH key, or `gh auth login` then `gh auth setup-git`).
+Answer `y` to add the marketplace, then pick a scope. If you added the marketplace before Roland joined it, run `claude plugin marketplace update blaine-protocol` first.
 
 ## Check
 
