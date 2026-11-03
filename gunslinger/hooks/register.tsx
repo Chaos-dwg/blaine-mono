@@ -2,6 +2,7 @@ import type { CoreEngineInterface, Register, Timer } from 'claude-code'
 
 import { frame, IDLE_GAP, MIN_ROWS, SHOT_TICKS, WAKE_TICKS, wakeAt } from './scene'
 import type { Palaver, Reading, Shot } from './scene'
+import { verb, verse } from './voice'
 
 const KEY = 'mohaine'
 const HIDDEN = 'isHidden' // Kept across sessions in $.store.
@@ -57,7 +58,11 @@ function run($: CoreEngineInterface) {
   tick ??= $.clock.every(TICK_MS, () => {
     t += 1
     if (isTurn && t - lastDraw >= IDLE_GAP) draw('idle')
-    if (palaver && t >= (wakeAt(palaver) ?? Infinity) + WAKE_TICKS) palaver = undefined
+    if (palaver && verse(t, palaver) !== verse(t - 1, palaver)) $.ui.invalidate('ui.render') // The spinner's next line.
+    if (palaver && t >= (wakeAt(palaver) ?? Infinity) + WAKE_TICKS) {
+      palaver = undefined
+      $.ui.invalidate('ui.render')
+    }
 
     if (site !== undefined) {
       const { requestId, columns, rows } = site
@@ -152,6 +157,20 @@ export const register: Register = on => {
       $.ui.invalidate('ui.render')
     }
   }).catch(($, e, next) => next(e)) // Replays the compaction's own outcome; it never runs twice.
+
+  // While his band shows, the spinner speaks for Roland: his verbs on the trail, the verse at the golgotha.
+  // Parked or too small to draw, he leaves the engine's words alone, and so the Blaine set in settings.json.
+  on('ui.render', { component: 'Spinner' }, ($, e, next) => {
+    if (isHidden || site === undefined || e.surface !== 'terminal') return next(e)
+
+    if (palaver !== undefined) {
+      const line = verse(t, palaver)
+
+      return next({ ...e, props: { ...e.props, word: line, message: e.props.message === null ? null : line } })
+    }
+
+    return next({ ...e, props: { ...e.props, word: verb(e.props.word) } }) // A message the engine set still shows.
+  })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rows = Math.min(ROWS, e.props.maxRows)

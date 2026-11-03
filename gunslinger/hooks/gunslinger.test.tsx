@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { CARD_TICKS, DEALT, FIRE, frame, IDLE_GAP, WAKE_TICKS, wakeAt } from './scene'
+import { VERBS, VERSE } from './voice'
 
 const TICK_MS = 66
 const FLASH = 0xfff3b0 // The muzzle flash's core.
@@ -40,11 +41,21 @@ function hookEngine(on: Parameters<Parameters<typeof test>[1]>[1], settings = {}
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
 
-    return <Text>engine</Text>
+    return <Text>{e.component === 'Spinner' ? (e.props.message ?? e.props.word) : 'engine'}</Text>
   })
 
   return blits
 }
+
+const SPINNER = {
+  plugin: 'gunslinger',
+  component: 'Spinner',
+  requestId: 'main',
+  props: { word: 'Sauteing', message: null, suffix: '…', mode: 'thinking' },
+} as const
+
+const spoken = async (ui: { find: (q: { type: 'Text' }) => Promise<{ text?: string } | undefined> }) =>
+  (await ui.find({ type: 'Text' }))?.text
 
 const decode = (cells: string) => new Uint32Array(Uint8Array.fromBase64(cells).buffer)
 
@@ -385,6 +396,64 @@ test('/gunslinger hides him, remembers it, and brings him back', async ($, on) =
   ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect((await ui.find({ type: 'Raster' }))?.type).toBe('Raster')
   await ui.unmount()
+})
+
+test('the spinner speaks for Roland only while his band shows, and leaves the engine its messages', async ($, on) => {
+  hookEngine(on)
+  sessionEngine(on)
+  on('store.set', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const spinner = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  expect(await spoken(spinner)).toBe('Sauteing') // No band drawn yet: the engine's own word.
+
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await spinner.redraw()
+  const said = await spoken(spinner)
+  expect(VERBS).toContain(said)
+  await spinner.redraw()
+  expect(await spoken(spinner)).toBe(said) // The same word holds the same verb.
+
+  await spinner.redraw({ ...SPINNER.props, message: 'Retrying in 5s' })
+  expect(await spoken(spinner)).toBe('Retrying in 5s')
+
+  const desktop = await $.ui.mount({ ...SPINNER, surface: 'desktop', props: { ...SPINNER.props, word: 'Creating notes.md' } })
+  expect(await spoken(desktop)).toBe('Creating notes.md')
+
+  await $.command.run({ command: 'gunslinger', args: '' })
+  await spinner.redraw(SPINNER.props)
+  expect(await spoken(spinner)).toBe('Sauteing') // Parked: the Blaine set comes back.
+
+  await desktop.unmount()
+  await band.unmount()
+  await spinner.unmount()
+})
+
+test('at the golgotha the spinner speaks the verse a line a card, then goes back to the trail', async ($, on) => {
+  const clock = mock.clock(on)
+  hookEngine(on)
+  let finish = (_: { messages: typeof SUMMARY }) => {}
+  on('session.compact', () => new Promise(resolve => (finish = resolve)))
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const spinner = await $.ui.mount({ ...SPINNER, surface: 'terminal', props: { ...SPINNER.props, message: 'Compacting conversation' } })
+
+  const compacting = $.session.compact(COMPACT)
+  await clock.advance(TICK_MS)
+  expect(await spoken(spinner)).toBe(VERSE[0])
+  await clock.advance(TICK_MS * CARD_TICKS)
+  expect(await spoken(spinner)).toBe(VERSE[1])
+  await clock.advance(TICK_MS * CARD_TICKS * 3)
+  expect(await spoken(spinner)).toBe(VERSE[2]) // Holds while the summary is still being written.
+
+  finish({ messages: SUMMARY })
+  await compacting
+  expect(await spoken(spinner)).toBe(VERSE[3])
+
+  await clock.advance(TICK_MS * (CARD_TICKS * 5 + WAKE_TICKS))
+  expect(await spoken(spinner)).toBe('Compacting conversation') // Palaver over: messages pass untouched again.
+
+  await spinner.unmount()
+  await band.unmount()
 })
 
 test('reduced motion holds the scene still', async ($, on) => {
