@@ -308,6 +308,33 @@ test('a skipped compaction ends the palaver without the long night', async ($, o
   await ui.unmount()
 })
 
+test('a compaction the API refuses runs once, reaches the API untouched, and fails as it would without him', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits = hookEngine(on)
+  const sent: unknown[] = []
+  on('session.compact', (_, e) => {
+    sent.push(e)
+    return Promise.reject(new Error('API Error: flagged'))
+  })
+  on('ui.invalidate', () => ({ value: undefined }))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const asked = { ...COMPACT, instructions: 'keep the stuff so far' }
+
+  const failure = await $.session.compact(asked).then(
+    () => undefined,
+    (error: unknown) => error,
+  )
+  await clock.advance(1000)
+
+  expect(failure).toBeInstanceOf(Error) // The kit words it its own way; the point is it still fails.
+  expect(sent).toEqual([asked]) // One request, word for word what was asked: the mod adds nothing to it.
+  expect(blits.some(cells => letters(cells).includes('YEARS'))).toBe(false)
+  const settled = blits.length
+  await clock.advance(1000)
+  expect(blits.length).toBe(settled) // Back on the trail, clock stopped.
+  await ui.unmount()
+})
+
 test('a precompute or a subagent compaction leaves Roland on the trail', async ($, on) => {
   const clock = mock.clock(on)
   const blits = hookEngine(on)
