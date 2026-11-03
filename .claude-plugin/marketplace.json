@@ -8,6 +8,11 @@
       "name": "blaine-mono",
       "source": "./blaine-mono",
       "description": "An 8-bit pink monorail crossing the waste lands above the prompt. Where it sits between Lud and Topeka shows how full the context is. /blaine shows or hides it."
+    },
+    {
+      "name": "gunslinger",
+      "source": "./gunslinger",
+      "description": "Roland follows the man in black across an 8-bit Mohaine Desert above the prompt. Roland's place is the context fill, the man in black waits at the window's edge, and a skull marks compaction. He draws on tool errors and every so often while Claude works. /gunslinger shows or hides him."
     }
   ]
 }
