@@ -12,6 +12,15 @@ export const MIN_ROWS = 7 // Ten-pixel figures with the sign row above them.
 export const SHOT_TICKS = 18 // Draw, fire, holster.
 export const FIRE = 4 // Ticks into a draw when the gun goes off.
 export const IDLE_GAP = 360 // Ticks of work between idle draws, about 24 seconds.
+export const CARD_TICKS = 45 // While the summary is written, a card is dealt about every three seconds.
+const DEAL_TICKS = 8 // A card's flight from his hand to the table, face down...
+const FLIP_TICKS = 2 // ...and its turn, edge on.
+export const DEALT = DEAL_TICKS + FLIP_TICKS // From his hand to face up.
+const FAST_GAP = 12 // Once the summary is done, the cards left come this quickly...
+const HOLD = 20 // ...and the Tower lies this long before the night comes down.
+export const WAKE_TICKS = 75 // The long night and the dawn after it, about five seconds.
+const DAWN_AT = 25 // Ticks into the wake when the sky starts to lighten.
+const NIGHT = 0.22 // How much daylight the golgotha keeps.
 const ALERT_AT = 0.8 // Of the way to compaction: the signs go red here.
 
 // Context as a chase: tokens in the window now, the window itself (where the man in black
@@ -19,6 +28,10 @@ const ALERT_AT = 0.8 // Of the way to compaction: the signs go red here.
 export type Reading = { tokens: number; window: number; compactAt: number }
 // One draw: `at` is the tick it began. An error brings a slow mutant; an idle draw fires downrange.
 export type Shot = { at: number; kind: 'error' | 'idle' }
+// A compaction as the palaver at the golgotha: `at` is the tick it began, `doneAt` the tick a
+// compaction that stood finished. The reading ends on the Tower, then the long night ends in
+// dawn over the man in black's bones.
+export type Palaver = { at: number; doneAt?: number }
 
 export const isAlert = (reading?: Reading) => reading !== undefined && reading.tokens >= ALERT_AT * reading.compactAt
 export const short = (tokens: number) =>
@@ -46,6 +59,7 @@ const SIGN = 0xfff4dc
 const ALERT = 0xff6040
 const INK_DARK = 0x2a1d14 // Letters over the sun or the haze read in dark ink.
 const ALERT_DARK = 0xa01a10
+const STAR = 0xdfe6ff
 
 const INK: Record<string, number> = {
   h: 0x3a2516, // Roland's hair: he lost his hat in the desert.
@@ -67,6 +81,18 @@ const INK: Record<string, number> = {
   S: 0xf2ede0, // The golgotha.
   E: 0x2a2420,
   o: 0x8a8070,
+  p: 0xd8cfc0, // The man in black's face, seen across the fire.
+  l: 0x6e3a22,
+  F: 0xff7a1a, // A devil-grass fire...
+  Y: 0xffd84a,
+  B: 0x4a3220,
+  a: 0x6a645a, // ...and its ash.
+  K: 0xf3ead2, // Tarot cards.
+  d: 0x1c2240,
+  q: 0x8a5a2a,
+  v: 0x3f8fd8,
+  x: 0xc8302c,
+  z: 0x0a0a0a,
 }
 
 const ROLAND = ['...hhh..', '...hss..', '....s...', '..ccccc.', '..cCccc.', '..cCccs.', '.wbyybg.', '..jjjj..']
@@ -80,6 +106,65 @@ const MIB_FEET = [['.f..f.'], ['..ff..']]
 const MUTANT = ['.GG.', 'LGLG', 'GGG.', 'GGGG', '.GGG', '.G.G', 'G..G']
 const MUTANT_DOWN = ['.GGG..', 'LGGGGG']
 const SKULL = ['.ooo.', 'oSSSo', 'SESES', 'oSSSo', '.SoS.']
+
+// The palaver: the two of them sat either side of a fire while the man in black reads the cards.
+const ROLAND_SIT = ['...hhh..', '...hss..', '....s...', '..ccccc.', '..cCccs.', '.wbyybg.', '..jjjjjk']
+const MIB_SIT = ['..rr..', '.lRRr.', '.pRRr.', '.lRRR.', 'lRRRRR', 'lRRRRR', 'fRRRRR'] // Firelight on his robe.
+const FLAMES = [
+  ['.Y.', 'FYF', 'BBB'],
+  ['Y..', 'FFY', 'BBB'],
+  ['..Y', 'YFF', 'BBB'],
+]
+const ASH = ['aBa']
+const BONES = ['.SS......', 'SESoSoSoS']
+const CARD_ROWS = 7
+const card = (art: readonly string[]) => ['KKKKK', ...art.map(row => `K${row.replaceAll('.', 'd')}K`), 'KKKKK']
+const CARD_BACK = card(['x.x', '.x.', 'x.x', '.x.', 'x.x'])
+const CARD_EDGE = Array<string>(CARD_ROWS).fill('K')
+// The reading from the book, in its order: the last card stays on the table.
+const CARDS = [
+  { name: 'THE SAILOR', art: card(['.K.', '.KK', 'KKK', 'qqq', 'vvv']) },
+  { name: 'THE PRISONER', art: card(['K.K', 'K.K', 'KsK', 'K.K', 'K.K']) },
+  { name: 'THE LADY OF SHADOWS', art: card(['KKz', 'KKz', 'KKz', 'xzx', 'x.x']) },
+  { name: 'DEATH', art: card(['KKK', 'zKz', 'KKK', '.K.', 'K.K']) },
+  { name: 'THE TOWER', art: card(['.o.', '.o.', 'oxo', 'ooo', 'ooo']) },
+] as const
+const WAKE_TEXT = 'TEN YEARS LATER'
+
+// The tick card `n` leaves his hand: one every CARD_TICKS while the summary is written, and
+// the rest in quick succession once it is done, so the Tower always closes the reading.
+function dealAt(n: number, { at, doneAt }: Palaver) {
+  const begun = doneAt === undefined ? CARDS.length : Math.min(CARDS.length, Math.floor((doneAt - at) / CARD_TICKS) + 1)
+  if (n < begun || doneAt === undefined) return at + n * CARD_TICKS
+
+  return Math.max(doneAt, at + (begun - 1) * CARD_TICKS + FAST_GAP) + (n - begun) * FAST_GAP
+}
+
+// The tick the long night begins, once the compaction is done and the Tower has lain a while.
+export function wakeAt(palaver: Palaver) {
+  return palaver.doneAt === undefined
+    ? undefined
+    : Math.max(palaver.doneAt, dealAt(CARDS.length - 1, palaver) + DEALT + HOLD)
+}
+
+// Ticks since the long night began; negative while the cards are still being read.
+function sinceWake(t: number, palaver?: Palaver) {
+  const wake = palaver && wakeAt(palaver)
+
+  return wake === undefined ? -1 : t - wake
+}
+
+// The card lying face up last, the one named over the fire.
+const faceUp = (t: number, palaver: Palaver) => CARDS.findLast((_, n) => t - dealAt(n, palaver) >= DEALT)
+
+// Night toward a colour: darker, and bluer as it darkens. `light` 1 leaves it as it is.
+function dim(color: number, light: number) {
+  const r = Math.round(((color >> 16) & 255) * light)
+  const g = Math.round(((color >> 8) & 255) * light)
+  const b = Math.round((color & 255) * (light + 0.25 * (1 - light)))
+
+  return (r << 16) | (g << 8) | b
+}
 
 function noise(a: number, b = 0): number {
   let x = Math.imul(a ^ Math.imul(b, 0x2f0b4c87) ^ 0x9e3779b9, 0x85ebca6b)
@@ -119,28 +204,83 @@ export function places(w: number, reading?: Reading) {
   return { roland: at(reading.tokens), mib, golgotha: reading.compactAt < reading.window ? at(reading.compactAt) + 2 : undefined }
 }
 
+// The golgotha, drawn over the darkened desert: the fire and the cards while the compaction
+// runs, then ash, bones, and Roland getting to his feet as the sky lightens.
+function golgotha(px: Uint32Array, w: number, feet: number, t: number, palaver: Palaver) {
+  const cx = Math.floor(w / 2)
+  const since = sinceWake(t, palaver)
+  const seated = feet - ROLAND_SIT.length + 1
+
+  if (since < 0) {
+    stamp(px, w, FLAMES[(t >> 1) % FLAMES.length] ?? [], cx - 1, feet - 2)
+    stamp(px, w, ROLAND_SIT, cx - 10, seated)
+    stamp(px, w, MIB_SIT, cx + 3, feet - MIB_SIT.length + 1)
+
+    // Each card flies face down from his hand to its place in the spread, turns edge on, and
+    // lands face up. The spread keeps clear of the two of them; the Tower takes the middle.
+    const hand = { x: cx + 2, y: feet - 6 }
+    const row = feet - 3 - CARD_ROWS
+    const spread = [cx - 21, cx - 15, cx + 10, cx + 16, cx - 2]
+    CARDS.forEach(({ art }, n) => {
+      const s = t - dealAt(n, palaver)
+      const x = spread[n] ?? cx
+      if (s < 0) return
+      if (s < DEAL_TICKS) {
+        const k = s / DEAL_TICKS
+        stamp(px, w, CARD_BACK, Math.round(hand.x + (x - hand.x) * k), Math.round(hand.y + (row - hand.y) * k))
+      } else if (s < DEALT) {
+        stamp(px, w, CARD_EDGE, x + 2, row)
+      } else {
+        stamp(px, w, art, x, row)
+      }
+    })
+    return
+  }
+
+  stamp(px, w, ASH, cx - 1, feet)
+  stamp(px, w, BONES, cx + 2, feet - 1)
+  if (since < DAWN_AT + 15) {
+    stamp(px, w, ROLAND_SIT, cx - 10, seated)
+  } else {
+    stamp(px, w, ROLAND, cx - 10, feet - FIGURE_ROWS + 1)
+    stamp(px, w, ROLAND_LEGS[1] ?? [], cx - 10, feet - FIGURE_ROWS + 1 + ROLAND.length)
+  }
+}
+
 // One frame as 0xRRGGBB pixels, row-major. `t` counts ticks; the scene never reads a clock.
-export function paint(w: number, h: number, t: number, isMoving: boolean, reading?: Reading, shot?: Shot): Uint32Array {
+export function paint(
+  w: number,
+  h: number,
+  t: number,
+  isMoving: boolean,
+  reading?: Reading,
+  shot?: Shot,
+  palaver?: Palaver,
+): Uint32Array {
   const px = new Uint32Array(w * h)
   const horizon = h - 5
   const feet = h - 2
   const top = feet - FIGURE_ROWS + 1
   const sunX = Math.floor(w * 0.68)
   const sunY = 2
+  const since = sinceWake(t, palaver)
+  const isGolgotha = palaver !== undefined && since < WAKE_TICKS
+  const go = isGolgotha ? palaver.at : t // The desert stops passing while they sit.
+  const light = !isGolgotha ? 1 : since < DAWN_AT ? NIGHT : NIGHT + (1 - NIGHT) * Math.min(1, (since - DAWN_AT) / 35)
 
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
       let color: number
       if (y >= horizon) {
-        const ground = (x + t * FAST) >>> 0
+        const ground = (x + go * FAST) >>> 0
         color = y === horizon ? HARDPAN_FAR : noise(ground, y) < 0.07 ? CRACK : (x + y) & 1 ? HARDPAN : HARDPAN_DARK
       } else {
         const shade = (y / horizon) * (SKY.length - 1) + (BAYER[(y & 3) * 4 + (x & 3)] ?? 0) / 16
         color = SKY[Math.min(SKY.length - 1, Math.floor(shade))] ?? SUN
 
         const sunDistance = Math.hypot(x - sunX, (y - sunY) * 1.1)
-        if (sunDistance < 3.6) color = sunDistance < 2.6 ? SUN : SUN_RIM
-        if (y >= horizon - (ridge[(x + (t >> 2)) % TILE] ?? 0)) color = MOUNTAIN
+        if (light === 1 && sunDistance < 3.6) color = sunDistance < 2.6 ? SUN : SUN_RIM
+        if (y >= horizon - (ridge[(x + (go >> 2)) % TILE] ?? 0)) color = MOUNTAIN
       }
       px[y * w + x] = color
     }
@@ -148,7 +288,7 @@ export function paint(w: number, h: number, t: number, isMoving: boolean, readin
 
   // The old coach road's stones and clumps of devil-grass, passing as Roland walks.
   for (let x = 0; x < w; x += 1) {
-    const ground = (x + t * FAST) >>> 0
+    const ground = (x + go * FAST) >>> 0
     if (ground % MARKER_GAP < 2) {
       for (let y = horizon - 2; y <= horizon; y += 1) dot(px, w, x, y, y === horizon - 2 ? STONE_LIT : STONE)
     } else if (noise(ground, 9) < 0.035) {
@@ -156,6 +296,19 @@ export function paint(w: number, h: number, t: number, isMoving: boolean, readin
       dot(px, w, x, y, GRASS)
       dot(px, w, x, y - 1, GRASS)
     }
+  }
+
+  if (isGolgotha) {
+    const fire = since < 0 ? Math.floor(w / 2) : undefined // It burns only while the cards are read.
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const glow = fire === undefined ? 0 : 0.8 * Math.max(0, 1 - Math.hypot(x - fire, (y - feet) * 1.6) / 9)
+        const isStar = light < 0.5 && y < horizon - 4 && noise(x * 31 + y, 11) < 0.02 && noise(x, t >> 3) < 0.85
+        px[y * w + x] = isStar ? STAR : dim(px[y * w + x] ?? 0, Math.max(light, glow))
+      }
+    }
+    golgotha(px, w, feet, t, palaver)
+    return px
   }
 
   const at = places(w, reading)
@@ -201,10 +354,19 @@ export function paint(w: number, h: number, t: number, isMoving: boolean, readin
 }
 
 // `cells` as RasterProps packs them: base64 of [codePoint, foreground, background] per cell.
-// Letters sit in their own cells: the man in black's sign on the top row, the token count over Roland.
-export function frame(columns: number, rows: number, t: number, isMoving: boolean, reading?: Reading, shot?: Shot): string {
+// Letters sit in their own cells: the man in black's sign on the top row, and over Roland the
+// token count, or at the golgotha the card on the table and then the years he slept.
+export function frame(
+  columns: number,
+  rows: number,
+  t: number,
+  isMoving: boolean,
+  reading?: Reading,
+  shot?: Shot,
+  palaver?: Palaver,
+): string {
   const h = rows * 2
-  const px = paint(columns, h, t, isMoving, reading, shot)
+  const px = paint(columns, h, t, isMoving, reading, shot, palaver)
   const cells = new Uint32Array(columns * rows * 3)
   for (let i = 0; i < columns * rows; i += 1) {
     const top = Math.floor(i / columns) * 2 * columns + (i % columns)
@@ -213,10 +375,14 @@ export function frame(columns: number, rows: number, t: number, isMoving: boolea
     cells[i * 3 + 2] = px[top + columns] ?? 0
   }
 
-  const isRed = isAlert(reading)
+  const since = sinceWake(t, palaver)
+  const scene =
+    palaver === undefined || since >= WAKE_TICKS ? undefined : since < 0 ? (faceUp(t, palaver)?.name ?? '') : WAKE_TEXT
+  const isRed = isAlert(reading) && scene === undefined
   const write = (text: string, row: number, start: number) => {
     for (let k = 0; k < text.length; k += 1) {
       const i = (row * columns + start + k) * 3
+      if (cells[i + 2] === STAR) cells[i + 2] = cells[i + 1] ?? 0 // A star behind a letter goes dark.
       const bg = cells[i + 2] ?? 0
       const isBright = ((bg >> 16) & 255) + ((bg >> 8) & 255) + (bg & 255) > 600
       cells[i] = text.charCodeAt(k)
@@ -227,7 +393,9 @@ export function frame(columns: number, rows: number, t: number, isMoving: boolea
   write(sign, 0, Math.max(0, columns - sign.length))
 
   const labelRow = Math.floor((h - 1 - FIGURE_ROWS) / 2) - 1 // The cell row just above Roland's head.
-  if (reading !== undefined && labelRow >= 1) {
+  if (scene !== undefined && labelRow >= 1) {
+    write(scene, labelRow, Math.max(0, (columns - scene.length) >> 1))
+  } else if (reading !== undefined && labelRow >= 1) {
     const label = short(reading.tokens)
     const start = places(columns, reading).roland + ((ROLAND_W - label.length) >> 1)
     write(label, labelRow, Math.max(0, Math.min(columns - label.length, start)))

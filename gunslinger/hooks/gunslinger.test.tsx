@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { FIRE, frame, IDLE_GAP } from './scene'
+import { CARD_TICKS, DEALT, FIRE, frame, IDLE_GAP, WAKE_TICKS, wakeAt } from './scene'
 
 const TICK_MS = 66
 const FLASH = 0xfff3b0 // The muzzle flash's core.
@@ -23,6 +23,8 @@ const BAND = {
 } as const
 
 const MILLION = { tokens: 312000, window: 1000000, compactAt: 1000000 }
+const SUMMARY = [{ role: 'user', text: 'The story so far.', toolUses: [] }] as const
+const COMPACT = { trigger: 'auto', messages: SUMMARY } as const // The event as the engine raises it.
 
 function hookEngine(on: Parameters<Parameters<typeof test>[1]>[1], settings = {}) {
   const blits: string[] = []
@@ -93,6 +95,52 @@ test('a draw fires once, a slow mutant only for an error', () => {
   expect(count(at(0, 'error'), GLOW)).toBeGreaterThan(0)
   expect(count(at(0, 'idle'), GLOW)).toBe(0)
   expect(count(frame(80, 9, 104, true, MILLION), FLASH)).toBe(0)
+})
+
+test('the palaver deals the five cards in order at night, then dawn comes up on bones', () => {
+  const SUN = 0xfffdf2
+  const cardAt = (n: number) => letters(frame(80, 9, 10 + n * CARD_TICKS + DEALT, true, MILLION, undefined, { at: 10 }))
+  const wake = (since: number) => frame(80, 9, 500 + since, true, MILLION, undefined, { at: 10, doneAt: 500 })
+
+  expect([0, 1, 2, 3, 4, 9].map(cardAt)).toEqual(
+    ['THE SAILOR', 'THE PRISONER', 'THE LADY OF SHADOWS', 'DEATH', 'THE TOWER', 'THE TOWER'].map(
+      name => `MAN IN BLACK 1M${name}`,
+    ),
+  )
+  expect(letters(frame(80, 9, 10 + DEALT - 1, true, MILLION, undefined, { at: 10 }))).toBe('MAN IN BLACK 1M')
+  expect(count(frame(80, 9, 20, true, MILLION, undefined, { at: 10 }), SUN)).toBe(0)
+  expect(letters(wake(0))).toBe('MAN IN BLACK 1MTEN YEARS LATER')
+  expect(count(wake(0), SKULL)).toBeGreaterThan(0) // His bones, where he sat.
+  expect(count(wake(WAKE_TICKS - 1), SUN)).toBeGreaterThan(0)
+  expect(letters(wake(WAKE_TICKS))).toBe('MAN IN BLACK 1M312k')
+})
+
+test('each card flies face down from his hand, turns, and lands face up in the spread', () => {
+  const CARD_BACK = 0xc8302c // The red of the backs; the Sailor's face has none.
+  const at = (s: number) => frame(80, 9, 10 + s, true, MILLION, undefined, { at: 10 })
+  const backAt = (s: number) => {
+    const codes = decode(at(s))
+    const columns = new Set<number>()
+    codes.forEach((c, i) => i % 3 !== 0 && c === CARD_BACK && columns.add(Math.floor(i / 3) % 80))
+    return Math.min(...columns)
+  }
+
+  expect(count(at(1), CARD_BACK)).toBeGreaterThan(0)
+  expect(backAt(6)).toBeLessThan(backAt(1)) // The Sailor goes left, away from his hand.
+  expect(count(at(DEALT), CARD_BACK)).toBe(0)
+})
+
+test('a compaction that finishes early deals the rest quickly, and the Tower still closes the reading', () => {
+  const palaver = { at: 0, doneAt: 5 }
+  const ends = wakeAt(palaver) ?? Infinity
+  const label = (t: number) => letters(frame(80, 9, t, true, MILLION, undefined, palaver))
+  const seen = Array.from({ length: ends }, (_, t) => label(t).slice('MAN IN BLACK 1M'.length)).filter(
+    (name, t, all) => name !== '' && name !== all[t - 1],
+  )
+
+  expect(seen).toEqual(['THE SAILOR', 'THE PRISONER', 'THE LADY OF SHADOWS', 'DEATH', 'THE TOWER'])
+  expect(ends).toBeLessThan(2 * CARD_TICKS) // Not the three seconds a card each it takes while the summary runs.
+  expect(label(ends)).toBe('MAN IN BLACK 1MTEN YEARS LATER')
 })
 
 test('a frame packs one glyph and two colours per cell', () => {
@@ -214,6 +262,67 @@ test('a long turn brings an idle draw every so often', async ($, on) => {
   expect(blits.some(cells => count(cells, FLASH) > 0)).toBe(true)
   expect(blits.some(cells => count(cells, GLOW) > 0)).toBe(false)
   await $.turn.complete({ reason: 'aborted', text: '' })
+  await ui.unmount()
+})
+
+test('a compaction between turns holds palaver at the golgotha, then dawn, then the clock stops', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits = hookEngine(on)
+  let finish = (_: { messages: typeof SUMMARY }) => {}
+  on('session.compact', () => new Promise(resolve => (finish = resolve)))
+  on('ui.invalidate', () => ({ value: undefined }))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const last = () => letters(blits.at(-1) ?? '')
+
+  const compacting = $.session.compact(COMPACT)
+  await clock.advance(TICK_MS * (DEALT + 2))
+  expect(last()).toContain('THE SAILOR')
+  await clock.advance(TICK_MS * CARD_TICKS * 5)
+  expect(last()).toContain('THE TOWER')
+
+  finish({ messages: SUMMARY })
+  expect((await compacting).messages).toEqual(SUMMARY) // The compaction comes through untouched.
+  await clock.advance(TICK_MS * 2)
+  expect(last()).toContain('TEN YEARS LATER')
+
+  await clock.advance(TICK_MS * WAKE_TICKS)
+  expect(last()).not.toContain('YEARS')
+  const settled = blits.length
+  await clock.advance(1000)
+  expect(blits.length).toBe(settled)
+  await ui.unmount()
+})
+
+test('a skipped compaction ends the palaver without the long night', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits = hookEngine(on)
+  on('session.compact', () => ({ skip: 'not now' }))
+  on('ui.invalidate', () => ({ value: undefined }))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  expect((await $.session.compact(COMPACT)).skip).toBe('not now')
+  await clock.advance(1000)
+
+  expect(blits.some(cells => letters(cells).includes('YEARS'))).toBe(false)
+  expect(letters((await ui.find({ type: 'Raster' }))?.props.cells as string)).toBe('MAN IN BLACK')
+  await ui.unmount()
+})
+
+test('a precompute or a subagent compaction leaves Roland on the trail', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits = hookEngine(on)
+  let finish = (_: { messages: typeof SUMMARY }) => {}
+  on('session.compact', () => new Promise(resolve => (finish = resolve)))
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  for (const e of [{ ...COMPACT, trigger: 'precompute' }, { ...COMPACT, agentId: 'a1' }] as const) {
+    const compacting = $.session.compact(e)
+    await clock.advance(1000)
+    finish({ messages: SUMMARY })
+    await compacting
+  }
+
+  expect(blits.length).toBe(0)
   await ui.unmount()
 })
 
