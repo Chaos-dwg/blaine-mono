@@ -18,6 +18,11 @@
       "name": "touchstone",
       "source": "./touchstone",
       "description": "Saves the facts of a session (git state, the whole uncommitted patch, your last words verbatim) just before it is compacted, tells the model where they are, and warns when the preserve note it will be handed is stale. /touchstone saves them on demand."
+    },
+    {
+      "name": "oy",
+      "source": "./oy",
+      "description": "Oy, the billy-bumbler who repeats your words back, cleaned up. /oy your rough thought puts a clear, ordered prompt in the box with a short line of things for you to confirm. It never sends anything."
     }
   ]
 }
