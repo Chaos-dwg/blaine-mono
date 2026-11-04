@@ -1,9 +1,12 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { CARD_TICKS, DEALT, FIRE, frame, IDLE_GAP, WAKE_TICKS, wakeAt } from './scene'
+import { CARD_TICKS, daylight, DEALT, FIRE, foesFor, frame, IDLE_GAP, shotEnds, VOLLEY, WAKE_TICKS, wakeAt } from './scene'
 import { VERBS, VERSE } from './voice'
 
 const TICK_MS = 66
+const at = (hour: number, minute = 0) => new Date(2026, 5, 1, hour, minute).getTime() // Local time, whatever the machine's zone.
+const NOON = at(12)
+const MIDNIGHT = at(23)
 const FLASH = 0xfff3b0 // The muzzle flash's core.
 const GLOW = 0x9dff8a // A slow mutant's eyes.
 const SKULL = 0xf2ede0
@@ -222,7 +225,7 @@ test('the band stands aside for a survey, a small window and other surfaces', as
 })
 
 test('Roland walks for a turn and stops with it', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
@@ -241,7 +244,7 @@ test('Roland walks for a turn and stops with it', async ($, on) => {
 })
 
 test('a tool error brings a slow mutant, and Roland draws on it', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on)
   on('tool.call', () => ({ result: { stdout: '', stderr: 'boom', interrupted: false }, text: 'boom', isError: true }))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
@@ -261,7 +264,7 @@ test('a tool error brings a slow mutant, and Roland draws on it', async ($, on) 
 })
 
 test('a long turn brings an idle draw every so often', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
@@ -277,7 +280,7 @@ test('a long turn brings an idle draw every so often', async ($, on) => {
 })
 
 test('a compaction between turns holds palaver at the golgotha, then dawn, then the clock stops', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on)
   let finish = (_: { messages: typeof SUMMARY }) => {}
   on('session.compact', () => new Promise(resolve => (finish = resolve)))
@@ -305,7 +308,7 @@ test('a compaction between turns holds palaver at the golgotha, then dawn, then 
 })
 
 test('a skipped compaction ends the palaver without the long night', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on)
   on('session.compact', () => ({ skip: 'not now' }))
   on('ui.invalidate', () => ({ value: undefined }))
@@ -320,7 +323,7 @@ test('a skipped compaction ends the palaver without the long night', async ($, o
 })
 
 test('a compaction the API refuses runs once, reaches the API untouched, and fails as it would without him', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on)
   const sent: unknown[] = []
   on('session.compact', (_, e) => {
@@ -347,7 +350,7 @@ test('a compaction the API refuses runs once, reaches the API untouched, and fai
 })
 
 test('a precompute or a subagent compaction leaves Roland on the trail', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on)
   let finish = (_: { messages: typeof SUMMARY }) => {}
   on('session.compact', () => new Promise(resolve => (finish = resolve)))
@@ -430,7 +433,7 @@ test('the spinner speaks for Roland only while his band shows, and leaves the en
 })
 
 test('at the golgotha the spinner speaks the verse a line a card, then goes back to the trail', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   hookEngine(on)
   let finish = (_: { messages: typeof SUMMARY }) => {}
   on('session.compact', () => new Promise(resolve => (finish = resolve)))
@@ -457,7 +460,7 @@ test('at the golgotha the spinner speaks the verse a line a card, then goes back
 })
 
 test('reduced motion holds the scene still', async ($, on) => {
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: NOON })
   const blits = hookEngine(on, { prefersReducedMotion: true })
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
 
@@ -465,5 +468,171 @@ test('reduced motion holds the scene still', async ($, on) => {
   await clock.advance(1000)
 
   expect(blits.length).toBe(0)
+  await ui.unmount()
+})
+
+// Colours a frame is counted by.
+const SUN = 0xfffdf2
+const MOON = 0xe8ecf8
+const MAN_IN_BLACK = 0x15121c
+const LOBSTROSITY = 0xc4552b
+const FIRE_COLORS = [0xff7a1a, 0xffd84a, 0x4a3220, 0x6a645a] // Flame, flame tip, log, ash.
+const sum = (cells: string, colors: number[]) => colors.reduce((n, color) => n + count(cells, color), 0)
+const brightness = (cells: string) =>
+  decode(cells).reduce((n, c, i) => (i % 3 === 2 ? n + (c >> 16) + ((c >> 8) & 255) + (c & 255) : n), 0)
+
+test('the sky follows the local clock: day, an hour of dusk, night, an hour of dawn', () => {
+  const sky = (hour: number) => frame(80, 9, 4, true, MILLION, undefined, undefined, { hour })
+
+  expect([5, 5.5, 6, 13, 20, 20.5, 21, 23].map(daylight).map(light => Math.round(light * 100))).toEqual([22, 61, 100, 100, 100, 61, 22, 22])
+  expect(count(sky(13), SUN)).toBeGreaterThan(0)
+  expect(count(sky(23), SUN)).toBe(0)
+  expect(count(sky(23), MOON)).toBeGreaterThan(0)
+  expect(brightness(sky(20.2))).toBeLessThan(brightness(sky(19)))
+  expect(brightness(sky(20.8))).toBeLessThan(brightness(sky(20.2)))
+  expect(brightness(sky(5.7))).toBeGreaterThan(brightness(sky(5.2)))
+  expect(frame(80, 9, 4, true, MILLION)).toBe(sky(13)) // No clock reading is a day.
+})
+
+test('at night he camps alone by his fire, and the man in black has only a fire far off', () => {
+  const night = (hour: number, t = 4) => frame(80, 9, t, true, MILLION, undefined, undefined, { hour })
+
+  expect(count(night(13), MAN_IN_BLACK)).toBeGreaterThan(0)
+  expect(count(night(23), MAN_IN_BLACK)).toBe(0)
+  expect(sum(night(13), FIRE_COLORS)).toBe(0)
+  expect(sum(night(23), FIRE_COLORS)).toBeGreaterThan(0)
+  expect(night(23)).toBe(night(22.5)) // The same camp, the ground not passing.
+  expect(night(23, 4)).not.toBe(night(23, 6)) // The flames move.
+  expect(letters(night(23))).toBe('MAN IN BLACK 1M312k')
+})
+
+test('his fire is the 5 hour limit: big when fresh, down to embers when it is spent', () => {
+  const fire = (limit?: number) => sum(frame(80, 9, 4, true, MILLION, undefined, undefined, { hour: 23, limit }), FIRE_COLORS)
+
+  expect(fire(10)).toBeGreaterThan(fire(50))
+  expect(fire(50)).toBeGreaterThan(fire(75))
+  expect(fire(75)).toBeGreaterThan(fire(95))
+  expect(fire(95)).toBeGreaterThan(sum(frame(80, 9, 4, true, MILLION, undefined, undefined, { hour: 13 }), FIRE_COLORS)) // Embers still glow.
+  expect(fire(undefined)).toBe(fire(50)) // No limit to read: an ordinary fire.
+})
+
+test('the cost and the limit are written on the left, red once the limit is nearly gone', () => {
+  const top = (world: object) => frame(80, 9, 4, true, MILLION, undefined, undefined, world)
+
+  expect(letters(top({ cost: 2.4, limit: 12.4 })).startsWith('$2.40 5H 12%')).toBe(true)
+  expect(letters(top({ cost: 1234.5 })).startsWith('$1235')).toBe(true)
+  expect(letters(top({ limit: 5 })).startsWith('5H 5%')).toBe(true)
+  expect(count(top({ limit: 50 }), ALERT)).toBe(0)
+  expect(count(top({ limit: 85 }), ALERT)).toBeGreaterThan(0)
+  expect(letters(frame(40, 9, 4, true, MILLION, undefined, undefined, { cost: 12.5, limit: 85 }))).toBe('$12.50 5H 85%MAN IN BLACK 1M312k')
+  expect(letters(frame(40, 9, 4, true, MILLION, undefined, undefined, { cost: 1e15, limit: 100 }))).toBe('MAN IN BLACK 1M312k') // No room: the sign wins.
+})
+
+test('at night a tool error brings a lobstrosity out of the dark, and the harder the limit is pressed the more come', () => {
+  const crawl = (foes: number, phase: number, kind: 'error' | 'idle' = 'error') =>
+    frame(80, 9, 100 + phase, true, MILLION, { at: 100, kind, foes }, undefined, { hour: 23 })
+
+  expect([0, 49, 50, 79, 80, 100].map(foesFor)).toEqual([1, 1, 2, 2, 3, 3])
+  expect(foesFor(undefined)).toBe(1)
+  expect(count(crawl(1, 1), LOBSTROSITY)).toBeGreaterThan(0)
+  expect(count(crawl(3, 1), LOBSTROSITY)).toBeGreaterThan(count(crawl(2, 1), LOBSTROSITY))
+  expect(count(crawl(2, 1), LOBSTROSITY)).toBeGreaterThan(count(crawl(1, 1), LOBSTROSITY))
+  expect(count(crawl(1, 1, 'idle'), LOBSTROSITY)).toBeGreaterThan(0) // Out of the dark, an idle draw is a lobstrosity too.
+  expect(count(frame(80, 9, 101, true, MILLION, { at: 100, kind: 'error' }, undefined, { hour: 13 }), LOBSTROSITY)).toBe(0) // By day it is the mutant.
+  expect(count(crawl(1, FIRE + 4), LOBSTROSITY)).toBeGreaterThan(0) // It lies where it fell...
+  expect(count(crawl(1, shotEnds({ at: 0, kind: 'error' })), LOBSTROSITY)).toBe(0) // ...until the draw is over.
+})
+
+test('more foes are a longer volley: a shot for each, VOLLEY ticks apart', () => {
+  const flash = (foes: number, phase: number) =>
+    count(frame(80, 9, 100 + phase, true, MILLION, { at: 100, kind: 'error', foes }, undefined, { hour: 13 }), FLASH)
+
+  expect([1, 2, 3].map(foes => shotEnds({ at: 0, kind: 'error', foes }))).toEqual([18, 18 + VOLLEY, 18 + 2 * VOLLEY])
+  expect(flash(1, FIRE + VOLLEY)).toBe(0)
+  expect(flash(2, FIRE + VOLLEY)).toBeGreaterThan(0)
+  expect(flash(3, FIRE + 2 * VOLLEY)).toBeGreaterThan(0)
+  expect(flash(2, FIRE + 2 * VOLLEY)).toBe(0)
+})
+
+test('the golgotha ends in the sky the clock has, not always in noon', () => {
+  const wake = (hour: number) => frame(80, 9, 500 + WAKE_TICKS - 1, true, MILLION, undefined, { at: 10, doneAt: 500 }, { hour })
+
+  expect(count(wake(13), SUN)).toBeGreaterThan(0)
+  expect(count(wake(23), SUN)).toBe(0)
+})
+
+test('the band reads the cost, the 5 hour limit and the local hour from the engine', async ($, on) => {
+  hookEngine(on)
+  sessionEngine(on)
+  on('session.usage', () => ({
+    value: {
+      context: { tokens: 84000, window: 1000000, percent: 8 },
+      rateLimits: [{ kind: 'seven_day', percentUsed: 5 }, { kind: 'five_hour', percentUsed: 62 }],
+      cost: { usd: 3.5 },
+    },
+  }))
+  mock.clock(on, { now: MIDNIGHT })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const cells = (await ui.find({ type: 'Raster' }))?.props.cells as string
+
+  expect(letters(cells)).toBe('$3.50 5H 62%MAN IN BLACK 1M84k') // The 5 hour window, not the 7 day one.
+  expect(count(cells, MAN_IN_BLACK)).toBe(0) // Eleven at night: camped.
+  expect(count(cells, MOON)).toBeGreaterThan(0)
+  await ui.unmount()
+})
+
+test('by day the band walks, and without a limit or a cost it writes none', async ($, on) => {
+  hookEngine(on)
+  sessionEngine(on)
+  on('session.usage', () => ({ value: { context: { tokens: 84000, window: 1000000, percent: 8 }, rateLimits: [] } }))
+  mock.clock(on, { now: at(11, 30) })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const cells = (await ui.find({ type: 'Raster' }))?.props.cells as string
+
+  expect(letters(cells)).toBe('MAN IN BLACK 1M84k')
+  expect(count(cells, MAN_IN_BLACK)).toBeGreaterThan(0)
+  await ui.unmount()
+})
+
+test('with the limit nearly spent, idle draws come twice as often and three lobstrosities come at once', async ($, on) => {
+  const clock = mock.clock(on, { now: MIDNIGHT })
+  const blits = hookEngine(on)
+  sessionEngine(on)
+  on('session.usage', () => ({
+    value: { context: { tokens: 84000, window: 1000000, percent: 8 }, rateLimits: [{ kind: 'five_hour', percentUsed: 90 }] },
+  }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await $.turn.start({ turnId: 't' })
+  await clock.advance(TICK_MS * (IDLE_GAP / 2 - 1))
+  expect(blits.some(cells => count(cells, LOBSTROSITY) > 0)).toBe(false)
+
+  await clock.advance(TICK_MS * 2) // Half the usual wait.
+  const crawl = blits.filter(cells => count(cells, LOBSTROSITY) > 0)
+  expect(crawl.length).toBeGreaterThan(0)
+  const one = frame(80, 9, 100, true, MILLION, { at: 99, kind: 'idle', foes: 1 }, undefined, { hour: 23 })
+  expect(Math.max(...crawl.map(cells => count(cells, LOBSTROSITY)))).toBeGreaterThan(count(one, LOBSTROSITY))
+  await $.turn.complete({ reason: 'aborted', text: '' })
+  await ui.unmount()
+})
+
+test('the sun keeps going down while the session sits idle', async ($, on) => {
+  const clock = mock.clock(on, { now: at(19, 30) })
+  hookEngine(on)
+  sessionEngine(on)
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  let ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(count((await ui.find({ type: 'Raster' }))?.props.cells as string, MAN_IN_BLACK)).toBeGreaterThan(0)
+  await ui.unmount()
+
+  await clock.advance(3.5 * 3600 * 1000) // Eleven at night, and no turn has run.
+  ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(count((await ui.find({ type: 'Raster' }))?.props.cells as string, MAN_IN_BLACK)).toBe(0)
   await ui.unmount()
 })

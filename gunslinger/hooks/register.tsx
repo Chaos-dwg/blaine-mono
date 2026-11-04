@@ -1,7 +1,7 @@
 import type { CoreEngineInterface, Register, Timer } from 'claude-code'
 
-import { frame, IDLE_GAP, MIN_ROWS, SHOT_TICKS, WAKE_TICKS, wakeAt } from './scene'
-import type { Palaver, Reading, Shot } from './scene'
+import { foesFor, frame, IDLE_GAP, MIN_ROWS, shotEnds, WAKE_TICKS, wakeAt } from './scene'
+import type { Palaver, Reading, Shot, World } from './scene'
 import { verb, verse } from './voice'
 
 const KEY = 'mohaine'
@@ -12,11 +12,13 @@ const MAX_COLUMNS = 512 // A Raster's own limit.
 const TICK_MS = 66
 
 let reading: Reading | undefined
+let world: World = {} // The hour, the session's cost and the 5 hour limit, kept beside the reading.
 let compaction: { window: number; tokens: number } | undefined
 
 // The reading blaine-mono takes: the plain usage is free; the compaction point is asked once per window size.
 async function measure($: CoreEngineInterface) {
-  const { context } = await $.session.usage()
+  const { context, rateLimits, cost } = await $.session.usage()
+  world = { ...world, cost: cost?.usd, limit: (rateLimits ?? []).find(limit => limit.kind === 'five_hour')?.percentUsed }
 
   if (compaction?.window !== context.window) {
     const { breakdown } = (await $.session.usage({ breakdown: 'summary' })).context
@@ -28,6 +30,12 @@ async function measure($: CoreEngineInterface) {
     reading = { tokens: context.tokens, window: context.window, compactAt: compaction?.tokens ?? context.window }
     $.ui.invalidate('ui.render')
   }
+}
+
+// The hour on this machine's clock, which is where he sits down for the night and gets up.
+async function tock($: CoreEngineInterface) {
+  const now = new Date(await $.clock.now())
+  world = { ...world, hour: now.getHours() + now.getMinutes() / 60 }
 }
 
 // The band's state lives with the module, as `reading` does; a reload starts it over.
@@ -42,8 +50,8 @@ let palaver: Palaver | undefined
 
 // One draw at a time, only while he walks: never at the golgotha.
 function draw(kind: Shot['kind']) {
-  if (isTurn && tick !== undefined && palaver === undefined && (shot === undefined || t - shot.at >= SHOT_TICKS)) {
-    shot = { at: t, kind }
+  if (isTurn && tick !== undefined && palaver === undefined && (shot === undefined || t - shot.at >= shotEnds(shot))) {
+    shot = { at: t, kind, foes: foesFor(world.limit) }
     lastDraw = t
   }
 }
@@ -57,7 +65,8 @@ function stop() {
 function run($: CoreEngineInterface) {
   tick ??= $.clock.every(TICK_MS, () => {
     t += 1
-    if (isTurn && t - lastDraw >= IDLE_GAP) draw('idle')
+    if (isTurn && t - lastDraw >= ((world.limit ?? 0) >= 80 ? IDLE_GAP / 2 : IDLE_GAP)) draw('idle') // Pressed hard, more come.
+    if (t % 900 === 0) void tock($).catch(() => undefined) // The sun keeps going down while he works.
     if (palaver && verse(t, palaver) !== verse(t - 1, palaver)) $.ui.invalidate('ui.render') // The spinner's next line.
     if (palaver && t >= (wakeAt(palaver) ?? Infinity) + WAKE_TICKS) {
       palaver = undefined
@@ -66,7 +75,7 @@ function run($: CoreEngineInterface) {
 
     if (site !== undefined) {
       const { requestId, columns, rows } = site
-      void $.ui.blit({ requestId, key: KEY, cells: frame(columns, rows, t, isTurn, reading, shot, palaver) })
+      void $.ui.blit({ requestId, key: KEY, cells: frame(columns, rows, t, isTurn, reading, shot, palaver, world) })
     }
     if (!isTurn && palaver === undefined) stop()
   })
@@ -80,6 +89,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'gunslinger', description: 'Show or hide the gunslinger above the prompt' })
     isHidden = (await $.store.get(HIDDEN)) === true
+    await tock($).catch(() => undefined)
     await measure($).catch(() => undefined) // A reload or a resumed session has a reading already.
 
     return next(e)
@@ -183,6 +193,7 @@ export const register: Register = on => {
     }
 
     site = { requestId: e.requestId, columns, rows }
+    await tock($).catch(() => undefined)
     const { Box, Raster } = $.ui.resolve(e)
 
     return (
@@ -192,7 +203,7 @@ export const register: Register = on => {
           key={KEY}
           columns={columns}
           rows={rows}
-          cells={frame(columns, rows, t, e.props.isWorking, reading, shot, palaver)}
+          cells={frame(columns, rows, t, e.props.isWorking, reading, shot, palaver, world)}
         />
       </Box>
     )

@@ -22,12 +22,30 @@ export const WAKE_TICKS = 75 // The long night and the dawn after it, about five
 const DAWN_AT = 25 // Ticks into the wake when the sky starts to lighten.
 const NIGHT = 0.22 // How much daylight the golgotha keeps.
 const ALERT_AT = 0.8 // Of the way to compaction: the signs go red here.
+const CAMP_AT = 0.5 // With less daylight than this he sits down for the night.
+export const VOLLEY = 4 // Ticks between his shots when more than one thing comes for him.
 
 // Context as a chase: tokens in the window now, the window itself (where the man in black
 // walks), and the compaction point (the golgotha), short of the window when auto-compact is on.
 export type Reading = { tokens: number; window: number; compactAt: number }
-// One draw: `at` is the tick it began. An error brings a slow mutant; an idle draw fires downrange.
-export type Shot = { at: number; kind: 'error' | 'idle' }
+// One draw: `at` is the tick it began. An error brings a slow mutant (a lobstrosity at night);
+// an idle draw fires downrange by day. `foes` is how many come at once: the harder the 5 hour
+// limit has been pressed, the more.
+export type Shot = { at: number; kind: 'error' | 'idle'; foes?: number }
+// What the world outside the context window says: the hour on the local clock (0 to 24, 14.5 is
+// half past two), what the session has cost in dollars, and how much of the 5 hour limit is spent.
+export type World = { hour?: number; cost?: number; limit?: number }
+
+export const shotEnds = (shot: Shot) => SHOT_TICKS + VOLLEY * ((shot.foes ?? 1) - 1)
+export const foesFor = (limit?: number) => (limit === undefined ? 1 : limit >= 80 ? 3 : limit >= 50 ? 2 : 1)
+
+// Daylight on the local clock, from the NIGHT it keeps to 1: dawn comes up from five to six,
+// and dusk goes down from eight to nine.
+export function daylight(hour: number) {
+  const up = hour < 12 ? hour - 5 : 21 - hour
+
+  return NIGHT + (1 - NIGHT) * Math.max(0, Math.min(1, up))
+}
 // A compaction as the palaver at the golgotha: `at` is the tick it began, `doneAt` the tick a
 // compaction that stood finished. The reading ends on the Tower, then the long night ends in
 // dawn over the man in black's bones.
@@ -60,6 +78,7 @@ const ALERT = 0xff6040
 const INK_DARK = 0x2a1d14 // Letters over the sun or the haze read in dark ink.
 const ALERT_DARK = 0xa01a10
 const STAR = 0xdfe6ff
+const MOON = 0xe8ecf8
 
 const INK: Record<string, number> = {
   h: 0x3a2516, // Roland's hair: he lost his hat in the desert.
@@ -93,6 +112,8 @@ const INK: Record<string, number> = {
   v: 0x3f8fd8,
   x: 0xc8302c,
   z: 0x0a0a0a,
+  O: 0xc4552b, // A lobstrosity's shell...
+  P: 0xe8794a,
 }
 
 const ROLAND = ['...hhh..', '...hss..', '....s...', '..ccccc.', '..cCccc.', '..cCccs.', '.wbyybg.', '..jjjj..']
@@ -106,6 +127,28 @@ const MIB_FEET = [['.f..f.'], ['..ff..']]
 const MUTANT = ['.GG.', 'LGLG', 'GGG.', 'GGGG', '.GGG', '.G.G', 'G..G']
 const MUTANT_DOWN = ['.GGG..', 'LGGGGG']
 const SKULL = ['.ooo.', 'oSSSo', 'SESES', 'oSSSo', '.SoS.']
+
+// A night alone: Roland sits at his own fire, and what crawls up out of the dark is a lobstrosity.
+const LOB = ['O..OO..O', 'OO.OO.OO', '.OPOOPO.', 'OOOOOOOO', '.O.OO.O.']
+const LOB_DOWN = ['..OOOO..', 'O.O..O.O']
+const LOB_W = 8
+const ROLAND_SIT_AIM = ['...hhh..', '...hss..', '....s...', '..ccccc.', '..cCccccsmm', '.wbyybg.', '..jjjjjk']
+// His fire is the 5 hour limit: big while it is fresh, down to embers as it runs out.
+const FIRES = {
+  big: [
+    ['..Y..', '.YFY.', 'YFFFY', 'FFFFF', 'BBBBB'],
+    ['.Y...', '.YFY.', 'FYFFY', 'FFFFF', 'BBBBB'],
+    ['...Y.', '.YFY.', 'YFFYF', 'FFFFF', 'BBBBB'],
+  ],
+  mid: [['.Y.', 'FYF', 'BBB'], ['Y..', 'FFY', 'BBB'], ['..Y', 'YFF', 'BBB']],
+  small: [['.F.', 'BBB'], ['F..', 'BBB'], ['..F', 'BBB']],
+  embers: [['aFa'], ['aBa'], ['aFa']],
+} as const
+// The man in black's own fire, a long way off at the window's edge.
+const FAR_FIRE = ['.Y.', 'FFF']
+const fireSize = (limit?: number) =>
+  limit === undefined ? 'mid' : limit < 33 ? 'big' : limit < 67 ? 'mid' : limit < 90 ? 'small' : 'embers'
+const GLOW_REACH = { big: 12, mid: 9, small: 6, embers: 3 } as const
 
 // The palaver: the two of them sat either side of a fire while the man in black reads the cards.
 const ROLAND_SIT = ['...hhh..', '...hss..', '....s...', '..ccccc.', '..cCccs.', '.wbyybg.', '..jjjjjk']
@@ -256,6 +299,7 @@ export function paint(
   reading?: Reading,
   shot?: Shot,
   palaver?: Palaver,
+  world: World = {},
 ): Uint32Array {
   const px = new Uint32Array(w * h)
   const horizon = h - 5
@@ -265,8 +309,10 @@ export function paint(
   const sunY = 2
   const since = sinceWake(t, palaver)
   const isGolgotha = palaver !== undefined && since < WAKE_TICKS
-  const go = isGolgotha ? palaver.at : t // The desert stops passing while they sit.
-  const light = !isGolgotha ? 1 : since < DAWN_AT ? NIGHT : NIGHT + (1 - NIGHT) * Math.min(1, (since - DAWN_AT) / 35)
+  const day = world.hour === undefined ? 1 : daylight(world.hour) // What the clock leaves of the day.
+  const light = !isGolgotha ? day : since < DAWN_AT ? NIGHT : NIGHT + (day - NIGHT) * Math.min(1, (since - DAWN_AT) / 35)
+  const isCamp = !isGolgotha && day < CAMP_AT
+  const go = isGolgotha ? palaver.at : isCamp ? 0 : t // The desert stops passing while they sit.
 
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
@@ -279,7 +325,7 @@ export function paint(
         color = SKY[Math.min(SKY.length - 1, Math.floor(shade))] ?? SUN
 
         const sunDistance = Math.hypot(x - sunX, (y - sunY) * 1.1)
-        if (light === 1 && sunDistance < 3.6) color = sunDistance < 2.6 ? SUN : SUN_RIM
+        if (light > 0.9 && sunDistance < 3.6) color = sunDistance < 2.6 ? SUN : SUN_RIM
         if (y >= horizon - (ridge[(x + (go >> 2)) % TILE] ?? 0)) color = MOUNTAIN
       }
       px[y * w + x] = color
@@ -298,56 +344,93 @@ export function paint(
     }
   }
 
-  if (isGolgotha) {
-    const fire = since < 0 ? Math.floor(w / 2) : undefined // It burns only while the cards are read.
+  const at = places(w, reading)
+  const size = fireSize(world.limit)
+  const fireX = Math.min(at.roland + 13, w - 7)
+  // Where firelight falls: the golgotha's fire while the cards are read (it burns only then), or at
+  // a camp his own fire, by the limit, and the man in black's far off.
+  const fires: (readonly [number, number])[] = isGolgotha
+    ? since < 0 ? [[Math.floor(w / 2), 9]] : []
+    : isCamp ? [[fireX + 2, GLOW_REACH[size]], [at.mib + 1, 4]] : []
+
+  if (light < 1) {
     for (let y = 0; y < h; y += 1) {
       for (let x = 0; x < w; x += 1) {
-        const glow = fire === undefined ? 0 : 0.8 * Math.max(0, 1 - Math.hypot(x - fire, (y - feet) * 1.6) / 9)
+        const glow = Math.max(0, ...fires.map(([fx, reach]) => 0.8 * (1 - Math.hypot(x - fx, (y - feet) * 1.6) / reach)))
         const isStar = light < 0.5 && y < horizon - 4 && noise(x * 31 + y, 11) < 0.02 && noise(x, t >> 3) < 0.85
         px[y * w + x] = isStar ? STAR : dim(px[y * w + x] ?? 0, Math.max(light, glow))
       }
     }
+  }
+  if (light < CAMP_AT) {
+    for (let y = 0; y < 6; y += 1) {
+      for (let x = 0; x < w; x += 1) if (Math.hypot(x - sunX, (y - sunY) * 1.1) < 2.4) px[y * w + x] = MOON
+    }
+  }
+  if (isGolgotha) {
     golgotha(px, w, feet, t, palaver)
     return px
   }
 
-  const at = places(w, reading)
   const step = isMoving ? (t >> 2) & 1 : 1
   const phase = shot === undefined ? -1 : t - shot.at
-  const isAiming = phase >= 1 && phase < SHOT_TICKS - 3
+  const volley = shot === undefined ? 0 : shotEnds(shot)
+  const isAiming = phase >= 1 && phase < volley - 3
+  const foes = shot?.foes ?? 1
 
   if (at.golgotha !== undefined) stamp(px, w, SKULL, at.golgotha, feet - SKULL.length + 1)
-  for (let x = 0; x < ROLAND_W; x += 1) dot(px, w, at.roland + x, feet + 1, SHADOW)
-  for (let x = 0; x < MIB_W; x += 1) dot(px, w, at.mib + x, feet + 1, SHADOW)
 
-  stamp(px, w, MIB, at.mib, top)
-  stamp(px, w, MIB_FEET[isMoving ? 1 - step : 1] ?? [], at.mib, top + MIB.length)
-  stamp(px, w, isAiming ? ROLAND_AIM : ROLAND, at.roland, top)
-  stamp(px, w, ROLAND_LEGS[step] ?? [], at.roland, top + ROLAND.length)
+  if (isCamp) {
+    const fire = FIRES[size][(t >> 1) % 3] ?? []
+    stamp(px, w, fire, fireX + 2 - ((fire[0]?.length ?? 0) >> 1), feet - fire.length + 1)
+    stamp(px, w, FAR_FIRE, at.mib + 1, feet - 1)
+    stamp(px, w, isAiming ? ROLAND_SIT_AIM : ROLAND_SIT, at.roland, feet - ROLAND_SIT.length + 1)
+  } else {
+    for (let x = 0; x < ROLAND_W; x += 1) dot(px, w, at.roland + x, feet + 1, SHADOW)
+    for (let x = 0; x < MIB_W; x += 1) dot(px, w, at.mib + x, feet + 1, SHADOW)
 
-  if (shot !== undefined && phase >= 0 && phase < SHOT_TICKS) {
+    stamp(px, w, MIB, at.mib, top)
+    stamp(px, w, MIB_FEET[isMoving ? 1 - step : 1] ?? [], at.mib, top + MIB.length)
+    stamp(px, w, isAiming ? ROLAND_AIM : ROLAND, at.roland, top)
+    stamp(px, w, ROLAND_LEGS[step] ?? [], at.roland, top + ROLAND.length)
+  }
+
+  if (shot !== undefined && phase >= 0 && phase < volley) {
     const muzzleX = at.roland + 11
-    const muzzleY = top + 4
+    const muzzleY = isCamp ? feet - 2 : top + 4
 
-    if (shot.kind === 'error') {
-      const x = Math.min(at.roland + ROLAND_W + 6, w - 5)
-      if (phase <= FIRE + 1) stamp(px, w, MUTANT, x, feet - MUTANT.length + 1)
-      else if (phase < SHOT_TICKS - 4) stamp(px, w, MUTANT_DOWN, x - 1, feet - 1)
-    } else if (phase > FIRE) {
-      // Never within pistol shot: the round kicks up dust short of the man in black.
-      const x = Math.round(muzzleX + (at.mib - muzzleX) * 0.6)
-      const r = (phase - FIRE) >> 1
-      for (let d = -r; d <= r; d += 1) dot(px, w, x + d, feet, DUST)
-      if (r > 0) dot(px, w, x, feet - r, DUST)
-    }
+    // He fires at each one in turn, VOLLEY ticks apart; `p` is the tick of his shot at this one.
+    for (let i = 0; i < foes; i += 1) {
+      const p = phase - i * VOLLEY
+      const isStanding = p <= FIRE + 1
+      const isDown = !isStanding && phase < volley - 4
 
-    if (phase === FIRE || phase === FIRE + 1) {
-      for (const [dx, dy] of [[1, 0], [2, 0], [1, -1], [1, 1]] as const) dot(px, w, muzzleX + dx, muzzleY + dy, FLASH)
-      dot(px, w, muzzleX, muzzleY, FLASH_CORE)
-    } else if (phase > FIRE + 1 && phase < FIRE + 9) {
-      const s = phase - FIRE - 2
-      dot(px, w, muzzleX + s, muzzleY - 1 - (s >> 1), SMOKE)
-      dot(px, w, muzzleX + s + 1, muzzleY - 1 - (s >> 1), SMOKE)
+      if (isCamp) {
+        // A lobstrosity scuttles in from the dark toward the fire, and goes over on its back.
+        const base = Math.min(fireX + 9 + 10 * i, w - LOB_W - 1 - 10 * (foes - 1 - i))
+        const x = Math.min(w - LOB_W, base + Math.max(0, (FIRE + 1 - phase) * 2))
+        if (isStanding) stamp(px, w, LOB, x, feet - LOB.length + 1)
+        else if (isDown) stamp(px, w, LOB_DOWN, x, feet - 1)
+      } else if (shot.kind === 'error') {
+        const x = Math.min(at.roland + ROLAND_W + 6 + i * 6, w - 5 - 6 * (foes - 1 - i))
+        if (isStanding) stamp(px, w, MUTANT, x, feet - MUTANT.length + 1)
+        else if (isDown) stamp(px, w, MUTANT_DOWN, x - 1, feet - 1)
+      } else if (p > FIRE && p < SHOT_TICKS) {
+        // Never within pistol shot: the round kicks up dust short of the man in black.
+        const x = Math.round(muzzleX + (at.mib - muzzleX) * (0.6 - 0.1 * i))
+        const r = (p - FIRE) >> 1
+        for (let d = -r; d <= r; d += 1) dot(px, w, x + d, feet, DUST)
+        if (r > 0) dot(px, w, x, feet - r, DUST)
+      }
+
+      if (p === FIRE || p === FIRE + 1) {
+        for (const [dx, dy] of [[1, 0], [2, 0], [1, -1], [1, 1]] as const) dot(px, w, muzzleX + dx, muzzleY + dy, FLASH)
+        dot(px, w, muzzleX, muzzleY, FLASH_CORE)
+      } else if (p > FIRE + 1 && p < FIRE + 9) {
+        const s = p - FIRE - 2
+        dot(px, w, muzzleX + s, muzzleY - 1 - (s >> 1), SMOKE)
+        dot(px, w, muzzleX + s + 1, muzzleY - 1 - (s >> 1), SMOKE)
+      }
     }
   }
   return px
@@ -364,9 +447,10 @@ export function frame(
   reading?: Reading,
   shot?: Shot,
   palaver?: Palaver,
+  world: World = {},
 ): string {
   const h = rows * 2
-  const px = paint(columns, h, t, isMoving, reading, shot, palaver)
+  const px = paint(columns, h, t, isMoving, reading, shot, palaver, world)
   const cells = new Uint32Array(columns * rows * 3)
   for (let i = 0; i < columns * rows; i += 1) {
     const top = Math.floor(i / columns) * 2 * columns + (i % columns)
@@ -379,18 +463,27 @@ export function frame(
   const scene =
     palaver === undefined || since >= WAKE_TICKS ? undefined : since < 0 ? (faceUp(t, palaver)?.name ?? '') : WAKE_TEXT
   const isRed = isAlert(reading) && scene === undefined
-  const write = (text: string, row: number, start: number) => {
+  const write = (text: string, row: number, start: number, red = isRed) => {
     for (let k = 0; k < text.length; k += 1) {
       const i = (row * columns + start + k) * 3
       if (cells[i + 2] === STAR) cells[i + 2] = cells[i + 1] ?? 0 // A star behind a letter goes dark.
       const bg = cells[i + 2] ?? 0
       const isBright = ((bg >> 16) & 255) + ((bg >> 8) & 255) + (bg & 255) > 600
       cells[i] = text.charCodeAt(k)
-      cells[i + 1] = isRed ? (isBright ? ALERT_DARK : ALERT) : isBright ? INK_DARK : SIGN
+      cells[i + 1] = red ? (isBright ? ALERT_DARK : ALERT) : isBright ? INK_DARK : SIGN
     }
   }
   const sign = reading === undefined ? 'MAN IN BLACK' : `MAN IN BLACK ${short(reading.window)}`
   write(sign, 0, Math.max(0, columns - sign.length))
+
+  // What the session has cost, and how much of the 5 hour limit is spent, on the left of the top row.
+  const spent = [
+    world.cost === undefined ? '' : `$${world.cost.toFixed(world.cost < 100 ? 2 : 0)}`,
+    world.limit === undefined ? '' : `5H ${Math.round(world.limit)}%`,
+  ]
+    .filter(Boolean)
+    .join(' ')
+  if (spent !== '' && spent.length + sign.length + 2 <= columns) write(spent, 0, 0, (world.limit ?? 0) >= ALERT_AT * 100)
 
   const labelRow = Math.floor((h - 1 - FIGURE_ROWS) / 2) - 1 // The cell row just above Roland's head.
   if (scene !== undefined && labelRow >= 1) {
