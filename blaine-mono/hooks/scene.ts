@@ -55,6 +55,7 @@ const WINDOW_ROW = 2
 const WINDOW = 0xbfe8ff
 const WINDOW_DIM = 0x3f6fa8
 const WINDOW_PINK = 0xff5fa0
+export const LIMIT_BAR = 0xd8508c // The cable under the rail, lit as far as the 5 hour limit is spent.
 const EYE = 0x1a2450
 const EYE_GLINT = 0xdff3ff
 export const FIRE = [0xfff6d0, 0xffd24a, 0xf6842c, 0xc43a1e, 0x4a2a30] // Hot to cold, then smoke.
@@ -476,7 +477,10 @@ export function frame(
 
   // The next train leaves Lud and runs out to where the new count puts him.
   const trip = act ? tripOf(reading) * (1 - (1 - act.age / ARRIVE_TICKS) ** 2) : (blast?.trip ?? tripOf(reading))
-  const cells = pack(paint(columns, rows * 2, t, isMoving, trip, blast?.age), columns, rows)
+  const px = paint(columns, rows * 2, t, isMoving, trip, blast?.age)
+  const lit = world.limit === undefined ? 0 : Math.floor((columns * Math.max(0, Math.min(100, world.limit))) / 100)
+  px.fill(LIMIT_BAR, (rows * 2 - 4) * columns, (rows * 2 - 4) * columns + lit) // Two pixels under the rail.
+  const cells = pack(px, columns, rows)
   const write = writer(cells, columns, rows, t)
   const color = isAlert(trip) ? WINDOW_PINK : SIGN
   const topeka = sign(reading)

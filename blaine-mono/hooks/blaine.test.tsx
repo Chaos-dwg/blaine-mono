@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { BLAST_TICKS, beat, FIRE, frame, STILL_AGE } from './scene'
+import { BLAST_TICKS, beat, FIRE, frame, LIMIT_BAR, STILL_AGE } from './scene'
 
 const BAND = {
   plugin: 'blaine-mono',
@@ -562,4 +562,17 @@ test('without a limit or a cost the band is as it was', async ($, on) => {
 
   expect(letters((await ui.find({ type: 'Raster' }))?.props.cells as string)).toBe('LUDTOPEKA 1M84k')
   await ui.unmount()
+})
+
+test('the cable under the rail lights as far as the 5 hour limit is spent', () => {
+  const bar = (limit?: number, columns = 80) =>
+    new Uint32Array(Uint8Array.fromBase64(frame(columns, 9, 4, true, { tokens: 84000, topeka: 160000 }, undefined, undefined, { limit })).buffer)
+      .filter((c, i) => i % 3 !== 0 && c === LIMIT_BAR).length
+
+  expect(bar()).toBe(0)
+  expect(bar(0)).toBe(0)
+  expect(bar(50)).toBe(40)
+  expect(bar(100)).toBe(80)
+  expect(bar(250)).toBe(80) // Past the end of the line stays on it.
+  expect(bar(50, 40)).toBe(20)
 })

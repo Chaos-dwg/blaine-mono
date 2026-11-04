@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { CARD_TICKS, daylight, DEALT, FIRE, foesFor, frame, IDLE_GAP, shotEnds, VOLLEY, WAKE_TICKS, wakeAt } from './scene'
+import { CARD_TICKS, daylight, DEALT, FIRE, FLARE_TICKS, foesFor, frame, IDLE_GAP, shotEnds, VOLLEY, WAKE_TICKS, wakeAt } from './scene'
 import { VERBS, VERSE } from './voice'
 
 const TICK_MS = 66
@@ -634,5 +634,52 @@ test('the sun keeps going down while the session sits idle', async ($, on) => {
   await clock.advance(3.5 * 3600 * 1000) // Eleven at night, and no turn has run.
   ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(count((await ui.find({ type: 'Raster' }))?.props.cells as string, MAN_IN_BLACK)).toBe(0)
+  await ui.unmount()
+})
+
+test('when the 5 hour limit resets his fire leaps up and throws sparks, then settles', () => {
+  const fire = (flare?: number, limit = 95) => frame(80, 9, 4, true, MILLION, undefined, undefined, { hour: 23, limit, flare })
+
+  expect(sum(fire(0), FIRE_COLORS)).toBeGreaterThan(sum(fire(), FIRE_COLORS)) // Embers to a blaze.
+  expect(sum(fire(0, 10), FIRE_COLORS)).toBeGreaterThan(sum(fire(undefined, 10), FIRE_COLORS)) // Sparks over even a big fire.
+  expect(brightness(fire(0))).toBeGreaterThan(brightness(fire(FLARE_TICKS - 1))) // The glow dies back...
+  expect(fire(FLARE_TICKS)).toBe(fire()) // ...to the fire the limit allows.
+  expect(frame(80, 9, 4, true, MILLION, undefined, undefined, { hour: 13, limit: 95, flare: 0 })).toBe(
+    frame(80, 9, 4, true, MILLION, undefined, undefined, { hour: 13, limit: 95 }),
+  ) // By day there is no fire to flare.
+})
+
+test('a limit that drops by a tenth or more is a reset: the fire flares, then the clock stops', async ($, on) => {
+  const clock = mock.clock(on, { now: MIDNIGHT })
+  const blits = hookEngine(on)
+  sessionEngine(on)
+  let limit = 99
+  on('session.usage', () => ({
+    value: { context: { tokens: 84000, window: 1000000, percent: 8 }, rateLimits: [{ kind: 'five_hour', percentUsed: limit }] },
+  }))
+  on('tool.call', () => ({ result: {} }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const embers = sum((await ui.find({ type: 'Raster' }))?.props.cells as string, FIRE_COLORS)
+
+  limit = 95 // Not a reset: nothing flares.
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await clock.advance(TICK_MS * 3)
+  expect(blits.length).toBe(0)
+
+  limit = 80
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await clock.advance(TICK_MS * 3)
+  const calm = sum(frame(80, 9, 4, true, { tokens: 84000, window: 1000000, compactAt: 1000000 }, undefined, undefined, { hour: 23, limit: 80 }), FIRE_COLORS)
+  expect(sum(blits.at(-1) as string, FIRE_COLORS)).toBeGreaterThan(calm) // Bigger than the fire 80 percent allows.
+  expect(embers).toBeLessThan(calm)
+
+  await clock.advance(TICK_MS * 20)
+  expect(blits.length).toBeGreaterThan(10) // Still flaring, not stopped at the first tick.
+  await clock.advance(TICK_MS * (FLARE_TICKS + 5))
+  const settled = blits.length
+  await clock.advance(1000)
+  expect(blits.length).toBe(settled) // The clock stopped with the flare.
   await ui.unmount()
 })

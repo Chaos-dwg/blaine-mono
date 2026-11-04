@@ -34,7 +34,9 @@ export type Reading = { tokens: number; window: number; compactAt: number }
 export type Shot = { at: number; kind: 'error' | 'idle'; foes?: number }
 // What the world outside the context window says: the hour on the local clock (0 to 24, 14.5 is
 // half past two), what the session has cost in dollars, and how much of the 5 hour limit is spent.
-export type World = { hour?: number; cost?: number; limit?: number }
+// `flare` is how many ticks since the 5 hour limit reset: his fire leaps up for FLARE_TICKS.
+export type World = { hour?: number; cost?: number; limit?: number; flare?: number }
+export const FLARE_TICKS = 45
 
 export const shotEnds = (shot: Shot) => SHOT_TICKS + VOLLEY * ((shot.foes ?? 1) - 1)
 export const foesFor = (limit?: number) => (limit === undefined ? 1 : limit >= 80 ? 3 : limit >= 50 ? 2 : 1)
@@ -345,13 +347,14 @@ export function paint(
   }
 
   const at = places(w, reading)
-  const size = fireSize(world.limit)
+  const flare = world.flare !== undefined && world.flare < FLARE_TICKS ? world.flare : undefined
+  const size = flare === undefined ? fireSize(world.limit) : 'big'
   const fireX = Math.min(at.roland + 13, w - 7)
   // Where firelight falls: the golgotha's fire while the cards are read (it burns only then), or at
   // a camp his own fire, by the limit, and the man in black's far off.
   const fires: (readonly [number, number])[] = isGolgotha
     ? since < 0 ? [[Math.floor(w / 2), 9]] : []
-    : isCamp ? [[fireX + 2, GLOW_REACH[size]], [at.mib + 1, 4]] : []
+    : isCamp ? [[fireX + 2, GLOW_REACH[size] + (flare === undefined ? 0 : Math.round(8 * (1 - flare / FLARE_TICKS)))], [at.mib + 1, 4]] : []
 
   if (light < 1) {
     for (let y = 0; y < h; y += 1) {
@@ -383,6 +386,11 @@ export function paint(
   if (isCamp) {
     const fire = FIRES[size][(t >> 1) % 3] ?? []
     stamp(px, w, fire, fireX + 2 - ((fire[0]?.length ?? 0) >> 1), feet - fire.length + 1)
+    // Sparks climb off it as it leaps.
+    for (let i = 0; flare !== undefined && i < 8; i += 1) {
+      const rise = (flare * 0.7 + i * 4) % 14
+      dot(px, w, fireX + 2 + Math.round(Math.sin(i * 2.3 + flare * 0.2) * 3), feet - 5 - Math.round(rise), rise < 10 ? 0xffd84a : 0xff7a1a)
+    }
     stamp(px, w, FAR_FIRE, at.mib + 1, feet - 1)
     stamp(px, w, isAiming ? ROLAND_SIT_AIM : ROLAND_SIT, at.roland, feet - ROLAND_SIT.length + 1)
   } else {

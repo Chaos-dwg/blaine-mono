@@ -1,6 +1,6 @@
 import type { CoreEngineInterface, Register, Timer } from 'claude-code'
 
-import { foesFor, frame, IDLE_GAP, MIN_ROWS, shotEnds, WAKE_TICKS, wakeAt } from './scene'
+import { FLARE_TICKS, foesFor, frame, IDLE_GAP, MIN_ROWS, shotEnds, WAKE_TICKS, wakeAt } from './scene'
 import type { Palaver, Reading, Shot, World } from './scene'
 import { verb, verse } from './voice'
 
@@ -13,12 +13,20 @@ const TICK_MS = 66
 
 let reading: Reading | undefined
 let world: World = {} // The hour, the session's cost and the 5 hour limit, kept beside the reading.
+let flareAt: number | undefined // The tick the 5 hour limit last reset.
+let lastLimit: number | undefined
 let compaction: { window: number; tokens: number } | undefined
 
 // The reading blaine-mono takes: the plain usage is free; the compaction point is asked once per window size.
 async function measure($: CoreEngineInterface) {
   const { context, rateLimits, cost } = await $.session.usage()
   world = { ...world, cost: cost?.usd, limit: (rateLimits ?? []).find(limit => limit.kind === 'five_hour')?.percentUsed }
+  // A limit that drops by a tenth or more has reset: the fire flares.
+  if (lastLimit !== undefined && world.limit !== undefined && world.limit <= lastLimit - 10 && !(await isStill($))) {
+    flareAt = t
+    run($)
+  }
+  lastLimit = world.limit
 
   if (compaction?.window !== context.window) {
     const { breakdown } = (await $.session.usage({ breakdown: 'summary' })).context
@@ -48,6 +56,9 @@ let lastDraw = 0
 let isTurn = false
 let palaver: Palaver | undefined
 
+const isFlaring = () => flareAt !== undefined && t - flareAt < FLARE_TICKS
+const sky = (): World => ({ ...world, flare: isFlaring() ? t - (flareAt ?? t) : undefined })
+
 // One draw at a time, only while he walks: never at the golgotha.
 function draw(kind: Shot['kind']) {
   if (isTurn && tick !== undefined && palaver === undefined && (shot === undefined || t - shot.at >= shotEnds(shot))) {
@@ -75,9 +86,9 @@ function run($: CoreEngineInterface) {
 
     if (site !== undefined) {
       const { requestId, columns, rows } = site
-      void $.ui.blit({ requestId, key: KEY, cells: frame(columns, rows, t, isTurn, reading, shot, palaver, world) })
+      void $.ui.blit({ requestId, key: KEY, cells: frame(columns, rows, t, isTurn, reading, shot, palaver, sky()) })
     }
-    if (!isTurn && palaver === undefined) stop()
+    if (!isTurn && palaver === undefined && !isFlaring()) stop()
   })
 }
 
@@ -139,7 +150,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       isTurn = false
       shot = undefined // He holsters when the turn ends; isWorking turning false redraws the band.
-      if (palaver === undefined) stop()
+      if (palaver === undefined && !isFlaring()) stop()
     }
 
     return next(e)
@@ -163,7 +174,7 @@ export const register: Register = on => {
       return result
     } finally {
       if (palaver?.doneAt === undefined) palaver = undefined // Skipped, failed, or held still.
-      if (palaver === undefined && !isTurn) stop()
+      if (palaver === undefined && !isTurn && !isFlaring()) stop()
       $.ui.invalidate('ui.render')
     }
   }).catch(($, e, next) => next(e)) // Replays the compaction's own outcome; it never runs twice.
@@ -203,7 +214,7 @@ export const register: Register = on => {
           key={KEY}
           columns={columns}
           rows={rows}
-          cells={frame(columns, rows, t, e.props.isWorking, reading, shot, palaver, world)}
+          cells={frame(columns, rows, t, e.props.isWorking, reading, shot, palaver, sky())}
         />
       </Box>
     )
