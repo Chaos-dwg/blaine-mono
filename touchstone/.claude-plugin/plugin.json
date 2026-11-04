@@ -1,0 +1,5 @@
+{
+  "name": "touchstone",
+  "version": "0.1.0",
+  "description": "Saves the facts of a session (git state, the whole uncommitted patch, your last words verbatim) just before it is compacted, and warns when the preserve note is stale."
+}
