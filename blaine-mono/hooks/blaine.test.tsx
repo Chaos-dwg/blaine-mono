@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { BLAST_TICKS, FIRE, frame, STILL_AGE } from './scene'
+import { BLAST_TICKS, beat, FIRE, frame, STILL_AGE } from './scene'
 
 const BAND = {
   plugin: 'blaine-mono',
@@ -317,34 +317,149 @@ test('Blaine goes up once when the context reaches Topeka', async ($, on) => {
   await ui.unmount()
 })
 
-test('automatic compaction is Topeka: he goes up where he stands, and the next one leaves Lud', async ($, on) => {
+const BEFORE = { tokens: 300000, topeka: 1000000 }
+const AFTER = { tokens: 40000, topeka: 1000000 }
+const ASKING = { at: 0, trip: 0.3 }
+const DONE = { at: 0, trip: 0.3, doneAt: 0, before: 300000, after: 40000 }
+
+// The first tick of each act of a riddling, and the tick it is over.
+function acts(riddling: typeof DONE) {
+  const starts: Record<string, number> = {}
+  for (let t = riddling.at; ; t += 1) {
+    const act = beat(t, riddling)
+    if (act === undefined) return { ...starts, over: t }
+    starts[act.phase] ??= t
+  }
+}
+
+// The column of Blaine's light on the route map.
+const light = (cells: string) =>
+  new Uint32Array(Uint8Array.fromBase64(cells).buffer).filter((_, i) => i % 3 === 0).slice(0, 80).indexOf(0x2588)
+
+test('while the summary is written the riddles go on, and each one brings Topeka closer', () => {
+  const at = (t: number) => frame(80, 9, t, true, BEFORE, undefined, ASKING)
+
+  expect(beat(100000, ASKING)?.phase).toBe('ask')
+  expect(letters(at(10))).toContain('CANDLETON')
+  expect(letters(at(10))).toContain('TOPEKA 1M')
+  expect(letters(at(10))).toContain('JAKE: WHAT HAS A NECK BUT NO HEAD?')
+  expect(letters(at(10))).not.toContain('BLAINE')
+  expect(letters(at(30))).toContain('BLAINE: A BOTTLE. TOO EASY!')
+  expect(letters(at(70))).toContain('SUSANNAH: WHAT HAS TEETH BUT CANNOT BITE?')
+  expect(light(at(4))).toBeGreaterThan(0)
+  expect(light(at(124))).toBeGreaterThan(light(at(4)))
+  expect(light(at(244))).toBeGreaterThan(light(at(124)))
+})
+
+test('once the summary is back Eddie tells his joke, Blaine breaks, crashes at Topeka, and the next train leaves Lud', () => {
+  const s = acts(DONE)
+  const at = (t: number, reading = BEFORE) => frame(80, 9, t, true, reading, undefined, DONE)
+
+  expect(s).toEqual({ ask: 0, duck: 38, frantic: 68, glide: 116, blast: 134, wake: 179, arrive: 254, over: 278 })
+  expect(letters(at(s.duck - 1))).toContain('BLAINE: A BOTTLE. TOO EASY!') // His last answer is read first.
+  expect(letters(at(s.duck + 6))).toContain("EDDIE: WHAT'S THE DIFFERENCE BETWEEN A DUCK?")
+  expect(letters(at(s.duck + 20))).toContain('BLAINE: ..')
+  expect(letters(at(s.frantic + 44))).toContain('blaine: why... am i... pink')
+  expect(letters(at(s.frantic + 44))).toContain('little blaine: hold on to something!')
+  expect(letters(at(s.glide + 5))).toBe('') // The engines are out and the map has blown.
+  expect(fire(at(s.blast + 10, AFTER))).toBeGreaterThan(0)
+  expect(letters(at(s.blast + 10, AFTER))).toBe('LUDTOPEKA 1M')
+
+  const wake = letters(at(s.wake + 40, AFTER))
+  for (const words of ['END OF THE LINE', '300k DOWN TO 40k', '4:14', '70']) expect(wake).toContain(words)
+  expect(letters(at(s.arrive + 10, AFTER))).toBe('LUDTOPEKA 1M40k')
+  expect(at(s.over, AFTER)).toBe(frame(80, 9, s.over, true, AFTER))
+})
+
+test('the riddling fits every band it draws on', () => {
+  const s = acts(DONE)
+
+  for (const [columns, rows] of [
+    [40, 6],
+    [41, 7],
+    [80, 8],
+    [512, 9],
+  ] as const) {
+    for (const t of [30, s.duck + 20, s.frantic + 30, s.glide + 5, s.blast + 10, s.wake + 70, s.arrive + 10]) {
+      expect(Uint8Array.fromBase64(frame(columns, rows, t, true, AFTER, undefined, DONE)).length).toBe(columns * rows * 12)
+    }
+  }
+  expect(letters(frame(80, 8, 30, true, BEFORE, undefined, ASKING))).toContain('BLAINE: A BOTTLE') // One row: the answer in the question's place.
+  expect(letters(frame(80, 8, 30, true, BEFORE, undefined, ASKING))).not.toContain('JAKE')
+  expect(letters(frame(80, 7, 30, true, BEFORE, undefined, ASKING))).not.toContain('JAKE') // No row: the route map alone.
+  expect(letters(frame(40, 6, s.wake + 40, true, AFTER, undefined, DONE))).toContain('END OF THE LINE')
+})
+
+test('every compaction, asked for or automatic, is the riddling, the crash at Topeka, and the next train out of Lud', async ($, on) => {
   const clock = mock.clock(on)
   const blits = hookEngine(on)
   sessionEngine(on)
+  let finish = () => {}
   on('session.usage', () => ({ value: { context: { tokens: 920000, window: 1000000, percent: 92 } } }))
-  on('session.compact', () => ({ messages: SUMMARY, tokensAfter: 40000 }))
+  on(
+    'session.compact',
+    () => new Promise(resolve => (finish = () => resolve({ messages: SUMMARY, tokensBefore: 920000, tokensAfter: 40000 }))),
+  )
+  const last = () => letters(blits.at(-1) ?? '')
 
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  for (const trigger of ['auto', 'manual'] as const) {
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    await $.turn.start({ turnId: 't' })
 
-  await $.session.compact({ trigger: 'auto', messages: SUMMARY })
-  await clock.advance(660)
-  expect(fire(blits.at(-1) as string)).toBeGreaterThan(0)
+    const compacting = $.session.compact({ trigger, messages: SUMMARY })
+    await clock.advance(66 * 10)
+    expect(last()).toContain('JAKE: WHAT HAS A NECK BUT NO HEAD?')
+    await clock.advance(66 * 120)
+    expect(last()).not.toContain('DUCK') // No joke until the summary is back.
 
-  await clock.advance(BLAST_TICKS * 66 + 660)
-  const settled = blits.length
-  await clock.advance(1000)
-  expect(blits.length).toBe(settled) // The timer stopped with the blast.
-  await ui.unmount()
+    finish()
+    expect((await compacting).tokensAfter).toBe(40000) // The compaction comes through untouched.
+    await $.turn.complete({ reason: 'aborted', text: '' })
+    await clock.advance(66 * 140)
+    expect(fire(blits.at(-1) as string)).toBeGreaterThan(0) // It runs on past the turn, to Topeka.
+    await clock.advance(66 * 60)
+    expect(last()).toContain('END OF THE LINE')
+    expect(last()).toContain('920k DOWN TO 40k')
 
-  const next = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  const cells = (await next.find({ type: 'Raster' }))?.props.cells as string
-  expect(fire(cells)).toBe(0)
-  expect(letters(cells)).toBe('LUDTOPEKA 1M40k')
-  await next.unmount()
+    await clock.advance(66 * 90)
+    const settled = blits.length
+    await clock.advance(1000)
+    expect(blits.length).toBe(settled) // The clock stops with the riddling.
+    await ui.unmount()
+
+    const next = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const cells = (await next.find({ type: 'Raster' }))?.props.cells as string
+    expect(fire(cells)).toBe(0)
+    expect(letters(cells)).toBe('LUDTOPEKA 1M40k')
+    await next.unmount()
+  }
 })
 
-test('he stays whole for a compaction that was held back, asked for, or not his', async ($, on) => {
+test('reduced motion holds one riddle and its answer still while the summary is written', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits = hookEngine(on, { prefersReducedMotion: true })
+  sessionEngine(on)
+  let finish = () => {}
+  on('session.usage', () => ({ value: { context: { tokens: 920000, window: 1000000, percent: 92 } } }))
+  on('session.compact', () => new Promise(resolve => (finish = () => resolve({ messages: SUMMARY, tokensAfter: 40000 }))))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const compacting = $.session.compact({ trigger: 'manual', messages: SUMMARY })
+  await clock.advance(1000)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const still = letters((await ui.find({ type: 'Raster' }))?.props.cells as string)
+  expect(still).toContain('JAKE: WHAT HAS A NECK BUT NO HEAD?')
+  expect(still).toContain('BLAINE: A BOTTLE. TOO EASY!')
+  expect(blits.length).toBe(0)
+  await ui.unmount()
+
+  finish()
+  await compacting
+})
+
+test('he stays whole for a compaction that was held back, or one not his', async ($, on) => {
   const clock = mock.clock(on)
   const blits = hookEngine(on)
   sessionEngine(on)
@@ -357,7 +472,6 @@ test('he stays whole for a compaction that was held back, asked for, or not his'
 
   await $.session.compact({ trigger: 'auto', messages: SUMMARY })
   answer = { messages: SUMMARY }
-  await $.session.compact({ trigger: 'manual', messages: SUMMARY })
   await $.session.compact({ trigger: 'precompute', messages: SUMMARY })
   await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: SUMMARY })
   await clock.advance(660)

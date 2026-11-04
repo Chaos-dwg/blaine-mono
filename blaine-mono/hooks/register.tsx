@@ -1,7 +1,7 @@
 import type { CoreEngineInterface, Register, Timer } from 'claude-code'
 
-import { BLAST_TICKS, frame, MIN_ROWS, STILL_AGE, tripOf } from './scene'
-import type { Reading } from './scene'
+import { BLAST_TICKS, beat, frame, MIN_ROWS, STILL_AGE, STILL_RIDDLE, tripOf } from './scene'
+import type { Reading, Riddling } from './scene'
 
 const KEY = 'waste-lands'
 const HIDDEN = 'isHidden' // Kept across sessions in $.store.
@@ -32,9 +32,12 @@ let isHidden = false
 let isTurning = false
 let wasAtTopeka = false
 let blast: { start: number; trip: number; isStill: boolean } | undefined
+let riddling: Riddling | undefined
 
-// The world stops for a blast, and its age counts on from the ticks.
+// The world stops for a blast, and its age counts on from the ticks. A riddling runs on its own clock.
 function draw(columns: number, rows: number, isMoving: boolean) {
+  if (riddling !== undefined) return frame(columns, rows, t, isMoving, reading, undefined, riddling)
+
   return frame(
     columns,
     rows,
@@ -48,16 +51,19 @@ function draw(columns: number, rows: number, isMoving: boolean) {
 function run($: CoreEngineInterface) {
   tick ??= $.clock.every(TICK_MS, () => {
     t += 1
+    const isOver = riddling !== undefined && beat(t, riddling) === undefined
+    if (isOver) riddling = undefined
 
     if (site !== undefined) {
       const { requestId, columns, rows } = site
       void $.ui.blit({ requestId, key: KEY, cells: draw(columns, rows, true) })
     }
+    if (isOver) rest()
   })
 }
 
 function rest() {
-  if (!isTurning && blast === undefined) {
+  if (!isTurning && blast === undefined && riddling === undefined) {
     tick?.cancel()
     tick = undefined
   }
@@ -66,7 +72,7 @@ function rest() {
 async function explode($: CoreEngineInterface, trip: number) {
   const isStill = Boolean(await $.settings.read({ key: 'prefersReducedMotion' }))
 
-  if (blast !== undefined) return
+  if (blast !== undefined || riddling !== undefined) return
 
   blast = { start: t, trip, isStill }
   $.clock.after(BLAST_TICKS * TICK_MS, () => {
@@ -77,6 +83,10 @@ async function explode($: CoreEngineInterface, trip: number) {
 
   if (!isStill) run($)
   $.ui.invalidate('ui.render')
+}
+
+async function stillness($: CoreEngineInterface) {
+  return Boolean(await $.settings.read({ key: 'prefersReducedMotion' }).catch(() => false))
 }
 
 async function watch($: CoreEngineInterface) {
@@ -120,19 +130,34 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Compaction at the engine's threshold is Topeka, wherever on the line he stands: nothing reaches
-  // the very end of a window. A PreCompact hook can hold one back, which answers with a skip.
-  on('session.compact', { trigger: 'auto' }, async ($, e, next) => {
-    const result = await next(e)
+  // Every compaction of the conversation, asked for or automatic, is the riddling: riddles while the
+  // summary is written, then Eddie's joke, the crash at Topeka, and the next train out of Lud. One a
+  // PreCompact hook holds back, or one that fails, just stops; a precompute or a subagent's is not his.
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId !== undefined || e.trigger === 'precompute') return next(e)
 
-    if (e.agentId === undefined && result.skip === undefined) {
-      const trip = tripOf(reading)
-      reading = reading && { ...reading, tokens: result.tokensAfter ?? 0 }
-      await explode($, trip).catch(() => undefined)
+    const isStill = await stillness($)
+    const trip = tripOf(reading)
+    const at = isStill ? t - STILL_RIDDLE : t
+    riddling = { at, trip }
+    if (!isStill) run($)
+    $.ui.invalidate('ui.render')
+
+    try {
+      const result = await next(e)
+      if (result.messages !== undefined) {
+        reading = reading && { ...reading, tokens: result.tokensAfter ?? 0 }
+        riddling = isStill ? undefined : { at, trip, doneAt: t, before: result.tokensBefore, after: result.tokensAfter }
+        if (isStill) await explode($, 1).catch(() => undefined) // The blast's one frame in place of the ride.
+      }
+
+      return result
+    } finally {
+      if (riddling?.doneAt === undefined) riddling = undefined
+      rest()
+      $.ui.invalidate('ui.render')
     }
-
-    return result
-  })
+  }).catch(($, e, next) => next(e)) // Replays the compaction's own outcome; it never runs twice.
 
   on('turn.start', async ($, e, next) => {
     const isStill = await $.settings.read({ key: 'prefersReducedMotion' })
