@@ -513,3 +513,53 @@ test('reduced motion holds the blast still, then clears it', async ($, on) => {
   expect(blits.length).toBe(0)
   await ui.unmount()
 })
+
+test('the cost, the 5 hour limit and its reset sit between Lud and Topeka, pink once the limit is nearly gone', () => {
+  const top = (world: object, columns = 80) => frame(columns, 9, 4, true, { tokens: 84000, topeka: 160000 }, undefined, undefined, world)
+  const pink = (cells: string) => new Uint32Array(Uint8Array.fromBase64(cells).buffer).filter((c, i) => i % 3 === 1 && c === 0xff5fa0).length
+
+  expect(letters(top({ cost: 2.4, limit: 12.4, resetMin: 130 }))).toBe('LUD$2.40 5H 12% 2h10mTOPEKA 160k84k')
+  expect(letters(top({ cost: 1234.5, limit: 3, resetMin: 45.4 }))).toBe('LUD$1235 5H 3% 45mTOPEKA 160k84k')
+  expect(letters(top({ limit: 9, resetMin: 61 }))).toBe('LUD5H 9% 1h01mTOPEKA 160k84k')
+  expect(letters(top({ limit: 9, resetMin: 100 }))).toBe('LUD5H 9% 1h40mTOPEKA 160k84k')
+  expect(letters(top({ limit: 9 }))).toBe('LUD5H 9%TOPEKA 160k84k')
+  expect(letters(top({ cost: 7 }))).toBe('LUD$7.00TOPEKA 160k84k')
+  expect(letters(top({ cost: 1e15, limit: 100, resetMin: 600 }, 40))).toBe('LUDTOPEKA 160k84k') // No room: the ends win.
+  expect(pink(top({ limit: 50 }))).toBe(pink(top({})))
+  expect(pink(top({ limit: 85 }))).toBeGreaterThan(pink(top({ limit: 50 })))
+})
+
+test('the band reads the cost, the 5 hour limit and the minutes to its reset from the engine', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 5, 1, 12) })
+  hookEngine(on)
+  sessionEngine(on)
+  on('session.usage', () => ({
+    value: {
+      context: { tokens: 84000, window: 1000000, percent: 8 },
+      rateLimits: [
+        { kind: 'seven_day', percentUsed: 5, resetsAt: '2026-06-05T00:00:00Z' },
+        { kind: 'five_hour', percentUsed: 62, resetsAt: '2026-06-01T14:05:00Z' },
+      ],
+      cost: { usd: 3.5 },
+    },
+  }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  expect(letters((await ui.find({ type: 'Raster' }))?.props.cells as string)).toBe('LUD$3.50 5H 62% 2h05mTOPEKA 1M84k')
+  await ui.unmount()
+  void clock
+})
+
+test('without a limit or a cost the band is as it was', async ($, on) => {
+  hookEngine(on)
+  sessionEngine(on)
+  on('session.usage', () => ({ value: { context: { tokens: 84000, window: 1000000, percent: 8 }, rateLimits: [] } }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+  expect(letters((await ui.find({ type: 'Raster' }))?.props.cells as string)).toBe('LUDTOPEKA 1M84k')
+  await ui.unmount()
+})

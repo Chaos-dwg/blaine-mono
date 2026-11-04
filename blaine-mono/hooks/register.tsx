@@ -1,7 +1,7 @@
 import type { CoreEngineInterface, Register, Timer } from 'claude-code'
 
 import { BLAST_TICKS, beat, frame, MIN_ROWS, STILL_AGE, STILL_RIDDLE, tripOf } from './scene'
-import type { Reading, Riddling } from './scene'
+import type { Reading, Riddling, World } from './scene'
 
 const KEY = 'waste-lands'
 const HIDDEN = 'isHidden' // Kept across sessions in $.store.
@@ -11,16 +11,24 @@ const MAX_COLUMNS = 512 // A Raster's own limit.
 const TICK_MS = 66 // Fifteen frames a second is plenty for 8-bit, and cheap.
 
 let reading: Reading | undefined
+let world: World = {} // The cost and the 5 hour limit, kept beside the reading.
 
 // Topeka is the end of the window: the model's, or a smaller one the settings ask for. The engine's
 // compaction figures won't do: a running session keeps the window it started with, and the threshold
 // it reports leaves out CLAUDE_AUTOCOMPACT_PCT_OVERRIDE.
 async function measure($: CoreEngineInterface) {
-  const { context } = await $.session.usage()
-  const limit = await $.settings.read({ key: 'autoCompactWindow' })
+  const { context, rateLimits, cost } = await $.session.usage()
+  const limit = (rateLimits ?? []).find(window => window.kind === 'five_hour')
+  const resets = limit?.resetsAt === undefined ? NaN : Date.parse(limit.resetsAt)
+  world = {
+    cost: cost?.usd,
+    limit: limit?.percentUsed,
+    resetMin: Number.isNaN(resets) ? undefined : (resets - (await $.clock.now().catch(() => NaN))) / 60000,
+  }
+  const window = await $.settings.read({ key: 'autoCompactWindow' })
 
   if (context.tokens !== undefined) {
-    reading = { tokens: context.tokens, topeka: Math.min(context.window, typeof limit === 'number' ? limit : Infinity) }
+    reading = { tokens: context.tokens, topeka: Math.min(context.window, typeof window === 'number' ? window : Infinity) }
     $.ui.invalidate('ui.render')
   }
 }
@@ -36,7 +44,7 @@ let riddling: Riddling | undefined
 
 // The world stops for a blast, and its age counts on from the ticks. A riddling runs on its own clock.
 function draw(columns: number, rows: number, isMoving: boolean) {
-  if (riddling !== undefined) return frame(columns, rows, t, isMoving, reading, undefined, riddling)
+  if (riddling !== undefined) return frame(columns, rows, t, isMoving, reading, undefined, riddling, world)
 
   return frame(
     columns,
@@ -45,6 +53,8 @@ function draw(columns: number, rows: number, isMoving: boolean) {
     isMoving && blast === undefined,
     reading,
     blast && { age: blast.isStill ? STILL_AGE : t - blast.start, trip: blast.trip },
+    undefined,
+    world,
   )
 }
 

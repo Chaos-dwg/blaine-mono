@@ -16,6 +16,10 @@ const BURSTS = 7
 // Context as a trip: tokens in the window now, and Topeka, the end of the window.
 export type Reading = { tokens: number; topeka: number }
 
+// What the account says besides the context: the session's cost in dollars, how much of the
+// 5 hour limit is spent, and the minutes until it resets.
+export type World = { cost?: number; limit?: number; resetMin?: number }
+
 // Blaine blowing up: ticks since it began, and how far along the line he got.
 export type Blast = { age: number; trip: number }
 
@@ -463,6 +467,7 @@ export function frame(
   reading?: Reading,
   blast?: Blast,
   riddling?: Riddling,
+  world: World = {},
 ): string {
   const act = riddling && beat(t, riddling)
   if (riddling !== undefined && act !== undefined && act.phase !== 'arrive') {
@@ -476,6 +481,17 @@ export function frame(
   const color = isAlert(trip) ? WINDOW_PINK : SIGN
   const topeka = sign(reading)
   write('LUD', 0, 0, color)
+
+  // The cost, the limit and when it resets, between the two ends of the line.
+  const minutes = world.resetMin === undefined ? '' : world.resetMin >= 60 ? `${Math.floor(world.resetMin / 60)}h${String(Math.round(world.resetMin % 60)).padStart(2, '0')}m` : `${Math.max(0, Math.round(world.resetMin))}m`
+  const spent = [
+    world.cost === undefined ? '' : `$${world.cost.toFixed(world.cost < 100 ? 2 : 0)}`,
+    world.limit === undefined ? '' : `5H ${Math.round(world.limit)}%`,
+    world.limit === undefined ? '' : minutes,
+  ]
+    .filter(Boolean)
+    .join(' ')
+  if (spent !== '' && 4 + spent.length + 2 + topeka.length <= columns) write(spent, 0, 4, (world.limit ?? 0) >= ALERT_AT * 100 ? WINDOW_PINK : SIGN)
   write(topeka, 0, columns - topeka.length, color)
 
   const labelRow = rows - BODY_ROWS - 1 // The cell row just above the train's roof.
